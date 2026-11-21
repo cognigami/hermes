@@ -1,0 +1,272 @@
+# Hermes — proposed first-release design
+
+**November 21, 2026 · Proposed design for review, not an implementation release.** The operator requested a concrete design based on the [handoff](README.md), [discovery](distributed-execution-discovery.md) and [WP05-D lessons](wp05d-distributed-compute-lessons.md). Choices below are proposals, not newly approved requirements or exercised guarantees. No code, prototype, platform admission, data transfer or Perry cutover has been performed. This is the authoritative home for the proposed architecture and contracts; the handoff remains the index and record of agreed requirements.
+
+## 1. Design in one paragraph
+
+Build a Go controller, Go worker agent and Go CLI. One controller owns a local transactional metadata database and immutable artifact directory. Independently supervised agents own application processes and persist issued work/results locally. Agents pull bounded assignments, run an application-owned executable, publish results per application-defined unit, and reconnect without restarting computation when the controller disappears. Scheduling uses compact metadata, not input payloads. A finite agent can run the same assignment/result contracts offline through explicit export/import. Start with one controller host, connected LAN agents and bounded file-based batch exchange—not a broker, cluster scheduler, cloud job manager or shared numerical runtime.
+
+## 2. Scope, guarantees and limits
+
+### Required invariants
+
+1. A unit's scientific/business meaning and immutable inputs do not change when its package, host, resource profile or attempt changes.
+2. An accepted unit has one canonical acceptance record referring to durable result bytes and a successful application-validation decision. Process exit or file receipt is insufficient.
+3. No normal reassignment while a previous owner might still start or execute the unit. Disconnection, timeout and a stale heartbeat do not establish quiescence.
+4. Worker computation does not depend on a controller process, interactive CLI or chat agent remaining alive. Work continues only within the finite assignment already issued.
+5. Drain prevents future starts at an acknowledged boundary. Completion additionally requires process quiescence and an explicit result/remainder inventory.
+6. Status, scheduling and recovery use verified identities and indexed records. They do not deserialize, hash or revalidate all accepted payloads.
+7. Operational failures remain operational failures; Hermes never infers a scientific negative from missing work, memory exhaustion or a deadline.
+
+### First-release boundary
+
+- Single authoritative controller **process and host**; durable state survives controller process failure. Host/disk disaster recovery is manual and outside the automatic guarantee.
+- Agents are trusted executors, not a sandbox for hostile applications. Workloads have no non-idempotent external side effects in the supported execution contract.
+- Atomic units and domain validators are application-defined. No arbitrary optimizer checkpoint/resume or mutation of an executing unit's resource profile.
+- Connected execution plus finite export/import share semantics, not live connectivity. Automatic Kaggle submission/download management is excluded initially.
+- Windows GPU and Kaggle execution remain target integrations, not certified capabilities. A release must state which OS/process-control/resource capabilities actually passed admission.
+- No active-active controller, distributed database, automatic controller-host failover, work stealing, autoscaling or optimization-based placement.
+
+## 3. Components and ownership
+
+```text
+application producer / operator
+              | CLI or versioned metadata API
+              v
+ controller (one authority) ---- local SQLite metadata
+       |       |                 immutable artifact directory
+       |       +---- bounded application validator processes
+       |
+       +---- authenticated agent pull / reports / artifact transfer
+                     |
+              independent Go agent
+              durable local assignment/result spool
+                     |
+              application executable (any language)
+
+ controller -- sealed bundle --> finite/offline Go agent
+ controller <-- result inventory + blobs -- explicit import
+```
+
+**Controller:** run/work catalogue, dependency readiness, unit ownership, scheduling, resource reservations, policy revisions, raw publication, validation queue, canonical acceptance and operator control.
+
+**Agent:** durable assignment receipt, local admission, application process tree, unit-start gating, artifact staging, local result publication, finite deadlines, drain and reporting. Use one agent per host, with a host-local exclusive service lock, so aggregate admission and device ownership have one authority. A controller service manager must not own worker process trees. Agents run under their own service lifetime.
+
+**Application:** immutable unit definitions, compatible runtime artifacts, preparation/reuse within a package, calculation, domain result schema and validator. Applications stage dependency-ready work through an explicit producer API; Hermes does not import Perry modules or reconstruct research state.
+
+**CLI:** a replaceable API client for submit, status, policy, drain, reconciliation and batch exchange. Exiting the CLI has no execution effect.
+
+## 4. Durable storage and authority
+
+### Controller storage
+
+Use SQLite on a supported local filesystem for small records and transactions; store large artifacts in a sibling immutable directory. Do not place the database on a network share. Select the Go driver and supported SQLite build during implementation review, not by introducing a dependency now.
+
+- Acquire an OS-held exclusive controller lock for the state root before opening service authority. Hold it for the process lifetime. A second controller fails closed. All metadata writers, including CLI operations, go through that authority.
+- Use durable transactions, foreign keys and unique constraints; acknowledge metadata only after commit. Database and artifact durability settings must be tested against the declared process-crash boundary.
+- Artifact publication streams into a private temporary file **within the artifact filesystem**, verifies declared length/digest, syncs bytes, and publishes atomically without replacing existing immutable content. Sync directory metadata before acknowledging durable publication where required by the platform.
+- Commit metadata references only after referenced blobs are durably published. A crash may leave an unreferenced blob, never an acknowledged reference to incomplete bytes. Garbage collection is deferred; retain artifacts in the first release.
+- Acceptance is one transaction inserting the unique `(run_id, unit_id)` record and advancing dependency/readiness metadata. Persist validator identity and its decision. Do not rerun validation after acceptance during ordinary recovery.
+
+The state root is the authoritative failure domain. If it is lost, Hermes does not claim that a worker spool reconstructs the entire controller. Manual restore/move must first establish the old controller cannot act and reconcile agents; restoring an old database snapshot while workers run is not a supported automatic recovery path. Backup/restore procedures are a separate prerequisite for a deployment promising machine-loss recovery.
+
+### Agent storage
+
+An agent persists a stable worker ID, boot/session ID, assignments, control revisions, started units and per-unit result manifests. Result blobs remain in its spool until controller raw-publication acknowledgment, not merely network-send completion. Retain unacknowledged bytes across agent restart if the disk survives.
+
+Disk-full or publication failure stops new unit starts and reports an operational error. Do not compute indefinitely without a result-retention path. Worker-local persistence survives process loss, not machine/disk loss. Controller-acknowledged raw results survive worker loss; acceptance may still be pending.
+
+## 5. Data contracts
+
+Version metadata envelopes (`schema_version: 1`); encode control messages as bounded JSON. Reject unknown incompatible versions. JSON contains references and bounded manifests, never embedded large input/output payloads. Transport schemas should follow these contracts rather than inventing another domain model.
+
+| Record | Essential fields / meaning |
+|---|---|
+| Run | `run_id`, application contract/validator revision, execution state, current policy revision |
+| Artifact | SHA256 digest, byte length, declared media/schema type; locations and access permissions are separate mutable metadata |
+| Unit | application `unit_id`, immutable spec digest, input artifact references, operation/runtime compatibility, dependency IDs, required capabilities |
+| Package | immutable ordered unit references plus reusable preparation references; a scheduling envelope, not an acceptance unit |
+| Policy revision | eligibility, permitted profiles, concurrency/aggregate budgets, retry limits and operating windows; immutable revision once issued |
+| Assignment | unique `assignment_id`, target worker/session or finite bundle ID, unit IDs, package reference, selected runtime/profile, policy revision, deadlines |
+| Candidate result | `unit_id`, assignment/attempt identity, immutable result manifest and blob references, application outcome tag |
+| Validation | candidate digest, validator contract/runtime revision, operational state and explicit application verdict |
+| Acceptance | unique run/unit key, canonical candidate digest and validation reference |
+| Control | target, monotonically increasing revision, action, deadline and persisted acknowledgment |
+
+The application chooses stable unit IDs; Hermes binds each to an immutable spec digest on registration. Re-registering an identical unit is idempotent; the same ID with different meaning is an error. Unit specs reference previously published input digests instead of embedding bytes in an identity computation. Runtime compatibility and validation meaning are pinned by the application contract; resource profiles are not calculation identities. If changing numerical settings changes meaning, the application must issue a different unit/spec.
+
+SHA256 verifies artifact bytes at ingress/staging boundaries. A published immutable artifact's digest is then ordinary metadata. Local verified-cache entries may be reused while their storage remains protected against mutation. Corruption recovery or explicit integrity audits can reverify bytes; routine status/lookup cannot. This is the direct response to the [measured repeated-hashing defect](wp05d-distributed-compute-lessons.md#november-21-addendum-repeated-whole-input-hashing-and-delayed-polling).
+
+## 6. Work and attempt state
+
+Do not use one overloaded status to describe computation, delivery and acceptance.
+
+- **Unit:** `blocked → ready → owned`; candidate delivery/validation may follow; `accepted` is terminal for ordinary execution. Unsuccessful attempts can return an unaccepted unit to `ready` only after ownership and publication reconciliation.
+- **Assignment execution:** `issued → acknowledged → running → quiescent`, or `uncertain` when ownership cannot be established. `issued` already reserves its units, even if the response was lost.
+- **Delivery:** local-spooled, transfer-pending, controller-published, or delivery-failed. Quiescent execution may still have pending delivery.
+- **Candidate:** published, validation-pending, validating, accepted, rejected, or conflict. A validator crash is not a domain rejection.
+
+Use relational constraints to enforce one unresolved owner per unit and one acceptance per unit. Readiness is an indexed/materialized metadata property updated on registration and acceptance, not discovered by rereading every historical result.
+
+A valid application outcome may be “no solution” if its validator accepts that conclusion. It still counts as a completed unit; the application decides whether dependent work becomes eligible. Dependencies refer to explicit accepted outcomes, not merely terminated processes. Failed or conflicting prerequisites leave dependents blocked with a reason. The application producer may register later stages as their definitions become known.
+
+## 7. Connected protocol and scheduling
+
+Use versioned HTTPS requests, agent-initiated long polling and bounded uploads/downloads. No message broker or worker-to-worker transport is required. Use provisioned mutual TLS identities for controller/agents and authenticated operator access. Credentials restrict worker identities and permitted artifact/run access; they do not make arbitrary submitted code safe. Bind controller identity/address through deployment configuration.
+
+### Assignment exchange
+
+1. Agent reports its session, capabilities, capacity, existing assignments and pending result inventory.
+2. Controller transactionally selects ready units, reserves resources and writes an assignment **before** returning it.
+3. Agent writes the assignment to its journal before acknowledging or starting. Duplicate delivery of the same ID returns the existing receipt; it never starts another process.
+4. A lost acknowledgment leaves the assignment owned. Reconciliation asks that agent about the same ID; it does not dispatch a substitute.
+5. Agent starts a bounded package session and durably records each unit-start grant. It can continue the issued finite package while the controller is unavailable.
+6. Results are published per unit; reports are retryable and idempotent. On reconnect, agent sends pending deltas/inventories, not every completed payload.
+
+Reports carry assignment IDs, session IDs and monotonic report/control revisions. Reject mismatched identities and ignore stale revisions. Persist outbound control intent before sending it. The single controller lock prevents concurrent authorities in this deployment; monotonic revisions handle delayed messages, not distributed split-brain. Do not claim a lease or epoch permits safe automatic host failover.
+
+### Simple scheduler
+
+Maintain indexed ready queues and unresolved assignments. Select eligible units in stable ready order, preferring an existing permitted artifact cache only among otherwise eligible choices. Enforce hard data-location/capability restrictions before locality preferences. Application-defined package sizing bounds unit count, runtime envelope and staged bytes; it must not create an unbounded grant of future work.
+
+Resource reservations include preparation, application processes, native children, transfer and validation overhead. Enforce aggregate host budgets as well as per-assignment profiles. GPU placement reserves device IDs and declared VRAM; a GPU label does not turn CPU work into GPU work. Unknown demand requires an explicit conservative/operator-approved profile, not a guessed estimate.
+
+Policy updates affect unassigned work immediately. Already issued assignments retain their policy/profile, including not-yet-started units in that assignment; changing them requires acknowledged drain/handback and reissue. Smaller finite assignments improve policy responsiveness. This explicit boundary avoids mutating a running solver or silently revoking work it may start while disconnected.
+
+Resource-stop retries are blocked under the same inadequate profile until policy changes or an explicit retry is authorized. Retry limits and backoff are recorded metadata; do not loop indefinitely. Independent ready work continues.
+
+### Public control surface
+
+Expose the same logical operations through CLI and versioned API: publish artifact; create run/register units and packages; inspect run/unit/assignment; revise policy; drain worker/run; resume run/worker eligibility; export assignment/import results; and explicitly resolve uncertain ownership or a result conflict. Mutating requests carry a client request ID persisted with their outcome, so retrying a lost response cannot create a second export or control action. Requests pin the run and relevant revision; reject stale conflicting changes rather than silently applying them. Agent registration, assignment polling, inventory reporting and artifact transfer are separate worker-authorized operations.
+
+A run moves `active → draining → paused` after confirmed handback, or remains `draining` with explicit pending/uncertain reasons. `resume` reopens issuance for eligible unowned work; it does not reverse a drain already issued to an assignment. Surviving assignments keep their recorded controls, and a drained agent becomes eligible again only through a newer acknowledged control revision. `completed` means all registered required units are accepted, the application producer has explicitly closed registration, and all issued execution is reconciled/quiescent. Report acceptance-complete separately if handback is still pending; an empty ready queue alone never completes an open-ended run. Producer polling of accepted-unit metadata is the first-release integration; no second notification bus is required.
+
+## 8. Application executable boundary
+
+A package session is an application process, launched by the agent with an explicit executable/argv, runtime artifact reference, working directory, bounded environment and local manifest path. No shell-string interpolation or infrastructure imports of Python/C++ libraries. The application owns compatible builds for each advertised platform.
+
+For reuse without losing unit-boundary control, use a small newline-delimited JSON protocol over stdin/stdout. Stdout is protocol-only; stderr is a separately bounded log stream. Large values go into files, never protocol messages.
+
+- Application emits `ready` after preparation. Preparation itself is cancellable operational work under the assignment budget.
+- Agent sends `execute_unit(unit_id)` only after recording the start grant. At most one unit is outstanding per package process; parallelism uses multiple admitted sessions.
+- Application must not begin another unit autonomously. It writes result files to its private output area and emits `unit_result(unit_id, manifest_path)` after closing them.
+- Agent verifies envelope/declared artifacts and publishes the immutable local result. Application output is not automatically a domain-valid result.
+- Agent acknowledges local publication before granting the next unit. On drain it sends `finish`, grants no next unit, collects the remainder and closes the session.
+- Unexpected process exit, malformed protocol, undeclared unit or missing bytes is an operational/protocol failure. Preserve already published results. An exit-zero flag cannot invent a missing unit result.
+
+Package preparation can stay resident across units. This small cooperative protocol is chosen over opaque multi-unit processes because resident preparation and independently drainable units must coexist; no in-process plugin system is needed. Applications that do not need reuse can use a trivial one-unit executable adapter. Controller-side validators use the same process-isolation principle, with a smaller input/result verdict interface, pinned runtime, explicit resource/time limits and no execution inside a database transaction.
+
+Application compliance is part of admission: the agent cannot infer safe boundaries inside an arbitrary native optimizer. First release supports side-effect-free calculations; exactly-once external effects are not promised.
+
+## 9. Publication, validation and conflicts
+
+1. Agent locally publishes a complete per-unit manifest and referenced bytes before announcing a candidate.
+2. Controller receives missing blobs through bounded transfer handlers; verifies/publishes each once. It durably records the candidate and acknowledges **raw publication**.
+3. A bounded validation queue runs the pinned application validator. Controller scheduling/heartbeats never wait synchronously for it. Validators may inspect large results; this is explicitly measured work.
+4. A successful verdict atomically establishes acceptance and dependency changes. Rejecting a candidate preserves the verdict and bytes; it does not silently fabricate a domain result or automatically repeat expensive computation.
+5. Agent may discard its transferred copies after raw-publication acknowledgment under retention policy; it need not wait for domain acceptance. It must not delete unpublished results on controller disconnect.
+
+Identical candidate redelivery is idempotent. Different bytes for the same unit are not assumed equivalent: preserve them and report `conflict`; never overwrite canonical acceptance. If an accepted result already exists, leave it immutable and expose the conflict. An application may explicitly define a pinned equivalence check; absent that, resolution requires operator/application action. Pending validation/conflict blocks a fresh computation retry unless explicitly resolved.
+
+Late results from a known prior attempt remain candidates for the same immutable unit, not new work. Validate them normally. If they establish acceptance while a retry is live, request that retry's drain/stop, preserve honest ownership until acknowledged, and do not claim zero duplicate execution. A forced retry of uncertain work is therefore an exceptional operator override that records possible duplicate execution, not ordinary recovery.
+
+## 10. Crash, disconnect and reconciliation
+
+| Event | Required behavior |
+|---|---|
+| Controller exits while unit runs | Agent keeps its process and finite assignment; spools results. Replacement controller takes the same root lock, reads unresolved metadata and reconnects. No worker restart. |
+| Assignment reply/ack lost | Resend/query the same assignment ID. Reserved units are not assigned elsewhere. |
+| Agent disconnects | Mark contact stale and ownership uncertain; do not equate this with termination. No automatic duplicate work. |
+| Agent process crashes | Preserve spool. On restart reconcile its local process boundary before new starts. Adopt only where explicitly supported; otherwise stop and verify the owned tree. If quiescence cannot be established, remain uncertain. |
+| Worker machine dies | Controller-published bytes remain usable. Lost in-flight work is retried only after machine/attempt termination is established; collect surviving spool first if accessible. |
+| Crash after blob publication, before candidate/acceptance transaction | Agent retries idempotently. Unreferenced immutable blobs are harmless. No full output replay. |
+| Validator or transfer fails | Keep pending state, retry with bounded backoff where operationally appropriate, and continue other scheduling. Invalid domain verdicts are not transport errors. |
+| Database disk full/unavailable | Stop new issuance and acknowledgments; surface a controller failure. Agents retain existing finite work/results. Do not substitute in-memory authority. |
+
+Recovery loads active assignments, unresolved delivery/validation/control records and indexed ready work, not all historical artifact bytes. Agents reconcile exact assignment IDs and manifest digests. Accept retained candidates before deciding whether unaccepted units need another computation.
+
+For a connected assignment, retry requires a durable final inventory and confirmation that the old process tree is quiescent or never started. “Not found” in a restarted agent journal is insufficient proof if its journal was lost. Operator-confirmed machine shutdown can resolve uncertainty. No heartbeat timeout automatically fences a process that cannot hear it.
+
+## 11. Drain, deadlines and interruption
+
+Every assignment carries `stop_new_units_at`, `terminate_at` and a final `handoff_deadline`, with `stop_new_units_at ≤ terminate_at < handoff_deadline`. These are finite execution/delivery bounds, not a guarantee that a remote collector will be available. Profiles also include a cooperative shutdown interval. Agents use elapsed-time timers after receipt and stop conservatively when deadline/clock validity is uncertain; disconnected/offline deployment must establish usable clocks before execution.
+
+Every unit-start grant checks the locally persisted control revision and `stop_new_units_at`, even without controller connectivity. Reaching that time closes the start gate; it does not depend on receiving a drain request.
+
+**Worker drain:** controller persists a control revision and stops issuing assignments to that worker. Agent serializes drain with its local start-grant gate, persists the revision and acknowledges the last granted unit. Any unit granted before this acknowledgment may finish. The request timestamp alone is not a barrier. A run drain first persists a run-level issuance barrier, then applies the same operation to every issued assignment, including acknowledged-but-not-started work.
+
+After drain acknowledgment, no new unit grants occur. The agent begins cooperative interruption early enough to fit its configured shutdown grace before `terminate_at` (or an earlier operator drain deadline), then forces termination of the entire owned process tree at that cutoff. A deadline too near for the grace shortens it; it does not move the cutoff. Retain results published before termination; incomplete files are not results. Deadlines include preparation and collection, not only solver time. Record execution quiescence separately from successful handoff.
+
+Drain returns `complete` only when affected execution is confirmed quiescent and its result/remainder inventory is durably known to the controller. It may return `pending_delivery`, `pending_offline_expiry` or `uncertain` at the operator deadline. Do not turn an unreachable worker into a success to satisfy a timer. Offline cancellation is available only if a platform integration proves it; otherwise the preissued finite bounds remain the control mechanism.
+
+Process-tree containment and enforcement are OS-specific admission requirements. Proposed backends are Linux cgroups, Windows Job Objects if native Windows is selected, and a separately qualified macOS process-tree backend. Do not claim hard host-RAM/VRAM limits on a platform that only samples usage. A profile requiring hard enforcement is ineligible on a backend without it. Windows versus WSL and macOS enforcement limitations must be settled before promising those release capabilities.
+
+## 12. Finite/offline batches
+
+The controller transactionally reserves exact units in an assignment **before** emitting an immutable bundle. Bundle contents: schema/runtime references, finite assignment and deadlines, unit/package manifests, permitted input subset, application runtime artifacts, and an inventory of all blob digests. Output is a separate compact inventory and per-unit result artifacts; runtime caches/log debris must not pollute the retrievable result set.
+
+The finite Go agent consumes this bundle without controller connectivity, applies the same local gating/publication rules, and publishes complete units incrementally. Its final inventory distinguishes completed, never-started and interrupted units. Copying the bundle is not permission to run it twice: export is a single-use assignment, bound to one execution session by the deployment procedure. This is a trusted operational constraint, not cryptographic prevention of offline copying.
+
+Initial exchange is explicit CLI export/import plus operator-owned transport. Record exact external submission/session identity when applicable. A staged export with unknown submission remains reserved; it is not automatically released. Import accepts partial per-unit evidence through the ordinary publication/validation path without requiring an all-or-nothing session envelope. Reimport is idempotent.
+
+Offline timeout alone does not prove session quiescence or that all retrievable outputs were collected. Reassignment waits for exact-session terminal evidence plus result reconciliation, or explicit operator resolution of missing evidence. Bundle deadlines bound compliant execution, but cannot prove a crashed agent's child tree stopped on an unqualified platform. A canceled-before-submission export can be released only with confirmation it was not dispatched.
+
+Kaggle release requires separately demonstrating Go artifact startup, native workload compatibility, actual lifetime/termination behavior, private bounded input staging and retrievable incremental output publication. No platform claim follows from this design. Automated cloud lifecycle adapters can be added later only if needed; the core does not manage cloud accounts or silently raise memory policy.
+
+## 13. Efficient control, reporting and security
+
+- Separate bounded metadata handling from artifact transfer, preparation and validators. Database write transactions contain no blob hashing, solver call, network operation or application validation.
+- Service worker reports/drain/collection between bounded scheduling batches. Queue scans are indexed and paginated; one large package cannot monopolize the controller. Use separate bounded concurrency for transfer and validation, with backpressure visible to operators.
+- Fetch immutable manifests by digest and reuse verified identities. Never hash a package per result record/status check. Reconciliation inventories contain compact references/deltas, not historical payload replay.
+- Report separate timings for queueing, staging, preparation, compute, local publication, transfer, validation and controller recovery. Show last worker report, current unit, last published result, accepted count, uncertainty and blocked reason. A live source or reserved slot is not useful-progress evidence.
+- Status reads are metadata-only. Detailed logs are bounded operational output, not a second event-sourced authority or a requirement to build a monitoring platform.
+- Pin allowed executable/runtime references; reject path traversal, undeclared files and excessive manifests/uploads. Limit result/log/spool sizes. Enforce artifact access/location permissions before transfer; no implicit market-data replication.
+- Use authenticated transport on the LAN. Do not build an arbitrary remote shell or expose artifact paths as authorization. Credential provisioning/rotation and service permissions require deployment documentation before networking is released.
+
+## 14. Proposed repository and implementation boundaries
+
+When implementation is authorized, start with one Go module and three entrypoints. Suggested packages describe responsibility, not a framework to prebuild:
+
+```text
+cmd/hermes/                 operator CLI
+cmd/hermes-controller/      controller service
+cmd/hermes-agent/           connected and finite agent modes
+internal/contracts/        versioned metadata and executable protocol
+internal/controller/       transactions, scheduling, reconciliation, API
+internal/agent/            journal, start gate, spool, execution loop
+internal/artifacts/        immutable publication and streaming transfer
+internal/platform/         qualified process-tree/resource backends
+```
+
+Keep SQL/storage code close to controller/agent operations; do not invent repository abstractions for hypothetical alternate databases. The finite path reuses agent execution and manifests, not an independent runner. Application adapters/runtimes live outside Hermes. Perry integration should implement these contracts explicitly, not move its controller wholesale.
+
+## 15. Verification and staged delivery — not authorization
+
+Start with application-neutral synthetic work; no research data or numerical inspection. Each gate protects a behavior, not a test count.
+
+| Gate | Evidence required |
+|---|---|
+| Durable contracts | Crash injection at blob/transaction/ack boundaries; same-ID retry is idempotent; incompatible same-unit specs and conflicting outputs are visible. |
+| Independent execution (R3/R4) | Kill controller during active units; workers retain process/unit identities, complete issued work and spool results; restart/reconcile without restarting those computations or scanning accepted payloads. |
+| Ownership (R6) | Lose assignment reply/ack, delay controls, disconnect agent and restart it with a surviving child. No reassignment until ownership is resolved; uncertainty remains explicit. |
+| Unit acceptance (R1) | Multi-unit package interrupted after publication; validate retained units and repackage only missing ones. Reject malformed/invalid candidates without false completion. |
+| Drain/policy (R2/R5) | Drain one of two busy workers, then the run. Confirm start-grant barrier, deadline enforcement, retained outputs/remainder and unaffected other worker. Change future profiles without mutating issued ones. |
+| Resource/platform (R7/R10) | Exercise each claimed process-tree backend, aggregate budgets, native thread limits, disk-full and required hard-enforcement rejection. GPU/native Windows/Kaggle each need their own evidence. |
+| Finite exchange (R8) | Run disconnected, interrupt before final envelope, import available units twice, recover missing remainder only after terminal reconciliation. No invented live drain capability. |
+| Controller efficiency (R9) | Synthetic representative-size artifacts with many accepted units: count full-byte hashes during status/recovery/completion lookups (expected zero after boundary verification), measure control latency during transfers/validation and prove scheduling scans do not starve reports. |
+
+Proposed sequence: (1) contracts/storage and synthetic executable adapter; (2) two connected qualified local agents and decisive crash/reconnect/drain check; (3) finite export/import; (4) individually admitted Windows/GPU/Kaggle integrations; (5) separately authorized Perry consumer adapter. Build/lint/test workflows must be documented through the standard project tools when code is introduced. No production run is a smoke-test fixture.
+
+## 16. Decisions to review before implementation
+
+This proposal makes the architecture concrete without pretending every deployment fact is established:
+
+1. **Accept single-host authority and local SQLite/artifact storage?** It is the simplest crash-recoverable design, but not automatic controller-machine-loss failover.
+2. **Accept the explicit executable protocol?** It requires cooperative application adapters for per-unit grants and reuse; arbitrary unmodified multi-unit processes cannot promise unit-boundary drain.
+3. **Accept conservative uncertainty?** Ordinary retries wait for quiescence/result reconciliation, even if that leaves capacity idle. A forced override explicitly accepts duplicate-execution risk.
+4. **Select first admitted OS/backends and hard resource promises.** Native Windows versus WSL, macOS memory enforcement and GPU containment remain deployment choices, not hidden guarantees.
+5. **Set workload-specific assignment bounds and drain-loss tolerance.** Finite deadlines are required; universal numeric defaults would be invented without workload evidence. Maximum atomic-unit loss must be acceptable to the consumer.
+6. **Accept explicit finite file exchange first?** Automated cloud lifecycle management is not necessary for shared offline contracts, but may be a later consumer requirement. Kaggle Go/runtime admission remains a release gate.
+7. **Confirm application acceptance/equivalence policy and data permissions.** Domain semantics and allowed staging locations cannot be selected by infrastructure.
+
+Approving this document would settle a design direction, not authorize experiments, data movement, dependency installation or Perry job control. Those releases remain explicit.

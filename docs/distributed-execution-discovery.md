@@ -2,6 +2,8 @@
 
 **November 21, 2026. Discovery / rough comparison, not an approved formal design or implementation authorization.** Hermes is a distinct standalone project in this repository (`/Users/ricardo/Documents/hermes`), not a Perry feature. The repository location and name are resolved. This document and the [WP05-D retrospective](wp05d-distributed-compute-lessons.md) were relocated from Perry; the [Hermes handoff](README.md) records subsequent decisions, including direction favoring narrow custom infrastructure implemented in Go. The dated Dask investigation below remains documentary evidence, not runtime proof or an instruction to implement Dask. No dependencies, prototype, data replication or remote execution are authorized/performed by this document.
 
+**Subsequent design:** [the concrete first-release proposal](design.md) now owns proposed architecture and contracts. This document remains the dated discovery baseline; its earlier open sketches are not a competing design. The proposal is for review, not an implementation authorization.
+
 Links into `../../perry/root/docs/` are optional historical evidence requiring a sibling Perry checkout. Inline `perry/...` and `scratch/...` paths refer to paths inside Perry, not Hermes. This discovery and its handoff are understandable without that checkout.
 
 ## 1. Objective and agreed direction
