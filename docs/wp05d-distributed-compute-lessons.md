@@ -70,7 +70,26 @@ Expensive input reconstruction inside a lazy iterator delayed both dispatch and 
 
 **Lesson:** fitting speed is not delivered throughput. Preparation, serialization, transfer, acceptance and restart scans need separate cost and lifetime accounting. For this run the operator explicitly chose prepare-before-compute; that was a resource policy, not a universal ban on pipelining. More workers or GPUs cannot repair controller starvation.
 
-Open question: how much repeated resume work is necessary compatibility/boundary checking, and how much duplicates already trusted immutable acceptance? COMPUTE's existing validate-once contract is the starting point, not permission to skip required checks.
+COMPUTE's existing validate-once contract is the starting point, not permission to skip required checks. The following measurement resolves one concrete source of redundant resume work; it does not quantify all controller overhead.
+
+#### November 21 addendum: repeated whole-input hashing and delayed polling
+
+**Confirmed defect reported by the Perry recovery session:** `WorkPackage.work_key` recomputes SHA256 over canonical JSON of the entire payload on every access. `ResultStore.completed` accesses it twice per existing record, and `Supervisor._complete` repeats that lookup per expected subresult. Routine result/scheduling lookups therefore repeatedly serialize and hash large immutable inputs. The controller also postpones worker polling behind its ordinary-queue scan. Relevant Perry code is `perry/range_placement_compute.py` (`work_key`, `read_package`, `ResultStore`) and `perry/range_placement_supervisor.py` (`_complete`, `_collect`, `execute`). The reported 144 monthly inputs total 25.75 GiB of JSON (median 182.5 MiB; range 118.7–255.5 MiB).
+
+**Isolated measured baseline:** one existing 130,528,699-byte package, with 34 already accepted records:
+
+| Phase | Wall time | Full key hashes | Time in key hashing |
+|---|---:|---:|---:|
+| `read_package` | 11.5239 s | 2 | 4.6399 s |
+| Bare `Supervisor._complete` | 153.6605 s | 68 | 153.5179 s (~99.91% of phase) |
+
+The baseline JSON was inspected for this addendum. The reporting session describes a ≤300 s hard wall, one numerical thread, no optimizer/fitting or scientific-value inspection, no production writes and no job-control actions. This is a controller-cost measurement, not a fitting benchmark or an extrapolated whole-run speedup. Evidence: Perry-relative `data/wp05d-controller-efficiency-20261121/baseline.json`, with `measure_controller.py` alongside it (absolute artifact root: `/Users/ricardo/Documents/perry/root/data/wp05d-controller-efficiency-20261121/`). Run context remains in the [Perry recovery checkpoint](../../perry/root/docs/research/wp05d-kaggle-recovery-20261121.md).
+
+**Reported operational observations (November 21, EST):** an 11:13 resume first dispatched a worker at 14:21; ordinary-queue checks ran from 12:28 to 15:40. A normal worker resource-stopped at 14:43, but the controller did not reach collection until about 15:40. These observations complement the isolated measurement; they do not attribute every elapsed minute to hashing. Source liveness or active-assignment metadata is not proof of useful computation: controller administration can dominate elapsed time while compute capacity is idle. Accepted outputs/prefixes remained durable. At the time of the report, both 13 GiB local retries were running and live work had not been interrupted for the fix.
+
+**Proposed repair and validation, not a deployed result:** verify expensive input identity at the appropriate boundaries, reuse verified identities for read-only lookups, and poll workers between package checks. The operator authorized narrow Perry fixes, tests, measurement and review while fits continue; a package-boundary cutover is only a possibility if justified. After-fix measurement is still pending: no validated speedup or deployment is claimed. No scientific, source-data or model changes, cloud-memory policy expansion, or Hermes implementation/job-control work follows from this report.
+
+**Lesson:** measure controller, collection and setup overhead separately from optimizer time. Do not treat restart warmup as historically fixed or unavoidable. Repeated safety proof on ordinary lookups can defeat existing immutable-publication guarantees rather than strengthen them; retain boundary checks without repeatedly re-proving the same large payload's identity.
 
 ### 3. Preserve the distinction between work, attempt and outcome
 

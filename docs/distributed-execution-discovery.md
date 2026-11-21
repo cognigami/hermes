@@ -20,6 +20,10 @@ Agreed discovery points:
 
 Interpretation recorded during discovery: “pick up after a crash and connect to still-running workers” refers to the controller. Worker crashes are also covered, but an atomic computation killed midway is not presumed resumable internally. Subsequent discussion confirmed controller crash/reconnect as a core requirement; exact ownership/reconciliation mechanisms remain open for formal design.
 
+### New controller-cost evidence
+
+The [WP05-D retrospective, lesson 2 addendum](wp05d-distributed-compute-lessons.md#november-21-addendum-repeated-whole-input-hashing-and-delayed-polling) records the November 21 isolated baseline confirming repeated whole-input hashing during completion lookups, plus reported queue scans delaying worker collection. This is concrete evidence for reusing verified immutable identities at read-only lookups and polling workers between package checks—not for treating source liveness as useful progress or restart overhead as unavoidable. Detailed measurements and Perry repair status live there; after-fix measurement is pending, with no validated/deployed fix or speedup claimed. This evidence adds no Hermes implementation authorization.
+
 ## 2. Boundary: what the application owns
 
 The application defines calculations, input eligibility, scientific or business acceptance, dependencies and allowed numerical/runtime equivalence. It supplies:
