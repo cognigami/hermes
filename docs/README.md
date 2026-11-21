@@ -21,6 +21,7 @@ The two source documents were relocated from Perry's `docs/research/`. Their lin
 - **Custom infrastructure is favored over Dask** because lifecycle control, durable independent execution and offline finite batches dominate. A concrete Go design is now proposed for review. Retain the Dask evaluation as evidence, not an instruction to implement Dask or proof from a running cluster.
 - **Hermes infrastructure will be Go.** Controller, worker agent and CLI are intended Go components. Applications may write computations in any language, including Python, C++ or CUDA. Numerical environments belong to applications, not infrastructure.
 - Earlier speculation about Python for Hermes batch infrastructure is superseded by the operator's direction: **“We're Go, others write what they want.”** Go packaging/deployment in Kaggle remains an investigation question, not a reason to assume a Python worker agent.
+- Agents are native OS/architecture-specific binaries, not VM bytecode. The operator requires an explicit host inventory and target build recipe; the [host and build contract](design.md#agent-host-and-build-contract) specifies the data to retrieve and the proposed `just build-agent <goos> <goarch>` interface. Matching a compilation target is not platform/resource admission.
 
 ### Work, policy and attempts
 
@@ -53,6 +54,7 @@ The design owns the details rather than duplicating them here:
 
 - [Scope and invariants](design.md#2-scope-guarantees-and-limits).
 - [Durable storage and authority](design.md#4-durable-storage-and-authority).
+- [Agent host inventory and cross-compilation recipe](design.md#agent-host-and-build-contract).
 - [Crash and reconciliation](design.md#10-crash-disconnect-and-reconciliation).
 - [Drain and deadlines](design.md#11-drain-deadlines-and-interruption).
 - [Verification gates](design.md#15-verification-and-staged-delivery--not-authorization), including the still-unexecuted decisive controller-crash/reconnect/drain check.

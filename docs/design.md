@@ -88,6 +88,7 @@ Version metadata envelopes (`schema_version: 1`); encode control messages as bou
 | Package | immutable ordered unit references plus reusable preparation references; a scheduling envelope, not an acceptance unit |
 | Policy revision | eligibility, permitted profiles, concurrency/aggregate budgets, retry limits and operating windows; immutable revision once issued |
 | Assignment | unique `assignment_id`, target worker/session or finite bundle ID, unit IDs, package reference, selected runtime/profile, policy revision, deadlines |
+| Host inventory / agent registration | target OS/architecture and execution environment, agent build/version, observed platform capabilities/resources and separately approved admission limits; see section 14 |
 | Candidate result | `unit_id`, assignment/attempt identity, immutable result manifest and blob references, application outcome tag |
 | Validation | candidate digest, validator contract/runtime revision, operational state and explicit application verdict |
 | Acceptance | unique run/unit key, canonical candidate digest and validation reference |
@@ -240,6 +241,83 @@ internal/platform/         qualified process-tree/resource backends
 
 Keep SQL/storage code close to controller/agent operations; do not invent repository abstractions for hypothetical alternate databases. The finite path reuses agent execution and manifests, not an independent runner. Application adapters/runtimes live outside Hermes. Perry integration should implement these contracts explicitly, not move its controller wholesale.
 
+### Agent host and build contract
+
+An agent is a **native executable compiled for a specific OS and CPU architecture**, not portable VM bytecode. Its binary includes the Go runtime; the target host does not need Go, `just` or a compiler installed. A Linux executable is not a macOS/Windows executable, and `amd64` is not `arm64`. Application runtimes and native libraries have their own independent compatibility requirements.
+
+#### Host inventory: what the operator retrieves and specifies
+
+Collect this information **inside the environment that will actually run the agent**, not just from the physical machine's marketing specifications. Keep observed properties separate from operator-approved limits. A deployment must provide all required fields below; GPU-specific fields may explicitly be `none`, and an unverified capability must be `unknown`, not assumed available.
+
+| Data to retrieve | Required operator specification / contract use |
+|---|---|
+| OS family, release/build and kernel version; Linux distribution if applicable | `goos` (`linux`, `darwin` or `windows`), exact OS/version and environment (`native`, `wsl2`, `container`, `vm` or `notebook`). WSL2 is a Linux target, not a Windows target. A notebook/container uses its guest kernel/architecture; its quotas and lifetime may differ from the host. |
+| Native execution architecture and any translation/emulation; CPU model | `goarch` (`amd64` or `arm64`) and ISA baseline. First design baseline: `GOAMD64=v1` or `GOARM64=v8.0`; no implicit Rosetta/x64 emulation or higher ISA optimization. Other architectures require an explicit contract extension. |
+| Effective CPU availability and memory limits inside this environment | Observed logical CPUs and RAM/cgroup/container ceiling, plus approved CPU/thread and RAM budgets. Do not equate physical totals with assignable resources. |
+| Writable storage, free space and persistence across process/session loss | Absolute spool/cache location, approved byte budget and retention/failure domain. Notebook scratch is not durable handback. |
+| Available process-tree containment, resource enforcement and service-account privileges | Selected qualified backend and actual enforcement capabilities. Record which limits are hard versus sampled, and reject profiles requiring unavailable enforcement. Compilation is not backend admission. |
+| GPU inventory, if used: device IDs, model, VRAM, driver/runtime versions and guest visibility | Permitted devices and VRAM budgets; application runtime compatibility remains application-owned. A CUDA installation is not an agent compilation target. |
+| Network access, trust material, clock synchronization and platform lifetime constraints | Connected controller address/identity and credential locations, or explicit offline mode; allowed data/staging locations, finite execution bounds and clock assumptions. Do not put private keys or tokens in the inventory. |
+
+Identify hosts with an operator-chosen stable `host_id`; bind it to the provisioned worker identity. Inventory is configuration/admission data, not permission to access a machine automatically. CPU model/OS descriptions explain the environment; `goos`, `goarch` and the baseline select the binary. On startup the agent reports its compiled target, version, protocol version and observed capabilities; the controller reconciles these with approved inventory before issuing work. Mismatch or unknown required capability blocks admission with a specific reason, not fallback execution. Refresh admission after an environment/resource change.
+
+Minimum target-identification commands for the operator to run on the intended host/environment:
+
+```sh
+# Linux/macOS, inside the intended guest/container/WSL environment if applicable:
+uname -s
+uname -m
+uname -r
+```
+
+```powershell
+# Native Windows (not a WSL shell):
+[System.Runtime.InteropServices.RuntimeInformation]::OSDescription
+[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+```
+
+Map Linux → `linux`, Darwin → `darwin`, Windows → `windows`; map `x86_64`/`AMD64`/`X64` → `amd64`, and `aarch64`/`arm64`/`Arm64` → `arm64`. Under translation, shell/process architecture can differ from native architecture: confirm native execution before selecting a build; do not silently treat a translated shell as host admission. These commands identify the target, **not** the remaining resource/enforcement inventory. On Linux retrieve distribution information from `/etc/os-release` and effective cgroup/container limits; on Windows/macOS retrieve OS/resource/device details from their system facilities. Go need not be installed to collect the inventory.
+
+#### Explicit cross-compilation recipe
+
+When the Go module and `cmd/hermes-agent` exist, expose **`just build-agent <goos> <goarch>`**. Both arguments are mandatory, including for a local build, so the build machine's architecture cannot accidentally choose the target. Proposed candidate pairs are `linux/{amd64,arm64}`, `darwin/{amd64,arm64}` and `windows/{amd64,arm64}`; this list identifies targets, **not a claim that their process/resource backends are implemented or admitted**. Build failure on a missing backend must remain a failure, never a no-op enforcement substitute.
+
+Keep the agent dependency graph buildable with `CGO_ENABLED=0`; use Go/OS-specific backend code rather than introducing a C toolchain requirement into this recipe. This restriction is for the infrastructure agent, not application kernels or the controller's eventual SQLite driver. A dependency requiring cgo would require an explicit revision of this build contract, including target toolchain/ABI requirements.
+
+Proposed `Justfile` recipe (specification only; there is no Go module or runnable recipe in this repository yet):
+
+```just
+# Run on a POSIX build machine with just and the project's pinned Go toolchain.
+build-agent goos goarch:
+    #!/usr/bin/env sh
+    set -eu
+    target_os='{{goos}}'
+    target_arch='{{goarch}}'
+    case "$target_os/$target_arch" in
+        linux/amd64|linux/arm64|darwin/amd64|darwin/arm64|windows/amd64|windows/arm64) ;;
+        *) echo "Unsupported agent target: $target_os/$target_arch" >&2; exit 1 ;;
+    esac
+    suffix=''
+    if [ "$target_os" = windows ]; then suffix='.exe'; fi
+    out="dist/agent/$target_os-$target_arch"
+    mkdir -p "$out"
+    GOOS="$target_os" GOARCH="$target_arch" CGO_ENABLED=0 \
+        GOAMD64=v1 GOARM64=v8.0 \
+        go build -trimpath -o "$out/hermes-agent$suffix" ./cmd/hermes-agent
+```
+
+The Go version will be pinned when `go.mod` is introduced, with support for these ISA settings and a documented minimum target OS/kernel matrix. This recipe uses the build machine's Go toolchain; it does not run the cross-compiled program or prove compatibility on the destination. A POSIX builder can produce Windows `.exe` files; Windows build-machine support is not implied by this shell recipe. No compiler/`just` installation on agent hosts is required.
+
+Examples, **after implementation**:
+
+```sh
+just build-agent linux amd64   # dist/agent/linux-amd64/hermes-agent
+just build-agent darwin arm64  # dist/agent/darwin-arm64/hermes-agent
+just build-agent windows amd64 # dist/agent/windows-amd64/hermes-agent.exe
+```
+
+Deploy the selected executable using the existing artifact identity/transport mechanism; do not invent a second binary registry. The release identifies its source/version, target and ISA baseline, Go toolchain version and executable digest. Confirm the agent starts on the actual target and reports the expected platform/protocol before admitting it; then qualify process-tree/resource behavior separately. Matching OS/architecture is necessary, not sufficient. Application Python/C++/CUDA dependencies are neither supplied nor certified by compiling the agent.
+
 ## 15. Verification and staged delivery — not authorization
 
 Start with application-neutral synthetic work; no research data or numerical inspection. Each gate protects a behavior, not a test count.
@@ -251,7 +329,7 @@ Start with application-neutral synthetic work; no research data or numerical ins
 | Ownership (R6) | Lose assignment reply/ack, delay controls, disconnect agent and restart it with a surviving child. No reassignment until ownership is resolved; uncertainty remains explicit. |
 | Unit acceptance (R1) | Multi-unit package interrupted after publication; validate retained units and repackage only missing ones. Reject malformed/invalid candidates without false completion. |
 | Drain/policy (R2/R5) | Drain one of two busy workers, then the run. Confirm start-grant barrier, deadline enforcement, retained outputs/remainder and unaffected other worker. Change future profiles without mutating issued ones. |
-| Resource/platform (R7/R10) | Exercise each claimed process-tree backend, aggregate budgets, native thread limits, disk-full and required hard-enforcement rejection. GPU/native Windows/Kaggle each need their own evidence. |
+| Resource/platform (R7/R10) | Build each claimed agent target through `just build-agent <goos> <goarch>`; start it on the inventoried target, verify its platform/protocol report and reject mismatched/unknown required capabilities. Exercise each claimed process-tree backend, aggregate budgets, native thread limits, disk-full and required hard-enforcement rejection. GPU/native Windows/Kaggle each need their own evidence; cross-compilation alone is not admission. |
 | Finite exchange (R8) | Run disconnected, interrupt before final envelope, import available units twice, recover missing remainder only after terminal reconciliation. No invented live drain capability. |
 | Controller efficiency (R9) | Synthetic representative-size artifacts with many accepted units: count full-byte hashes during status/recovery/completion lookups (expected zero after boundary verification), measure control latency during transfers/validation and prove scheduling scans do not starve reports. |
 
