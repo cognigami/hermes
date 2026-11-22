@@ -203,6 +203,98 @@ No prototype or performance campaign is released here. Prefer synthetic, applica
 
 The repository location/name are now settled. Before those investigations, settle the exact R4 survival semantics, acceptable in-flight unit loss, storage topology/durability and initial worker platform/runtime. Do not choose a full message schema or framework extension architecture before those decisions. The handoff records the proposed decisive custom crash/reconnect/drain check; none of these checks is authorized now.
 
+## 10. Reuse assessment: retryable atomic runs (November 22)
+
+**Documentation-only investigation requested by the operator.** Native macOS coordination without a Linux VM/container is a hard deployment requirement. Airflow's [prerequisites](https://airflow.apache.org/docs/apache-airflow/stable/installation/prerequisites.html) distinguish macOS development from Linux-only supported production, excluding it on that basis. The operator is now exploring whether inexpensive atomic runs, with package aggregation later, can replace the stronger requirement to preserve every surviving computation. This is a proposed requirement relaxation, not a claim that current Perry optimizations are cheap or permission to change their execution.
+
+Evaluate equivalent application outcomes, not compatibility with our proposed Go agent, database, schemas or executable protocol. Direct adoption is preferable to wrapping a product in a second scheduler. Application-specific validation and offline transport alone do not justify building a general executor.
+
+### Proposed smaller contract and what it removes
+
+```text
+immutable package manifest: expected stable unit IDs and input/runtime references
+                    |
+        platform schedules independent unit attempts
+                    |
+        per-attempt complete result artifacts
+                    |
+      application validates and commits first valid result per unit
+                    |
+        aggregate exactly the package's expected unit IDs
+```
+
+- A platform run is one bounded, restartable application unit, not necessarily a whole monthly package. Changing host, scheduler run ID or attempt does not change the unit's meaning. One optimization is only a candidate boundary; its loss/preparation cost must be acceptable before selecting it.
+- At-least-once execution is acceptable under this proposed model: an interrupted or unreachable attempt may be repeated, even while an old attempt might still exist. No non-idempotent external side effects. This relaxes execution ownership, not data integrity or machine-resource safety.
+- An attempt writes isolated result bytes and publishes a completion manifest only when they are complete. Platform success or a log line is not sufficient. A result lost before durable publication may be recomputed; already committed valid results are reused.
+- Retain the agreed first-valid acceptance rule: application validation establishes downstream suitability, and only the first valid result to commit becomes canonical for a stable unit. Never overwrite it because another attempt differs. This can be an application-owned validate/publish step using a single canonical storage boundary, not a new Hermes service. Ordinary platform caches are not automatically that boundary.
+- Aggregation is a separate retryable operation over an explicit expected-unit manifest and canonical result references. It never zips unordered successful child outputs or treats a missing unit as a scientific negative. Aggregation must not depend exclusively on one live parent retaining Python objects or child process handles.
+- Application/runtime/input definitions stay immutable across retry, even if the platform reloads deployment files. Packages and accepted artifacts need retention independent of execution-history cleanup.
+- Droppable machinery includes surviving-process adoption, no-overlap redispatch proof and persistent multi-unit session/control protocols. Whole-package atomic acceptance is unnecessary. Stop-taking-new-runs plus finishing/killing the current atomic run may suffice instead of handback of a resident package process.
+- Still necessary: finite run/retry bounds, approved data locations, actual host budgets and deadlines, prevention of orphaned-process accumulation, complete durable results and domain validation. Allowing duplicate execution does not make overlapping RAM/VRAM consumption or false host-handback reports safe.
+
+The key unresolved input is the acceptable loss per attempt, including staging/preparation, rather than whether a scheduler advertises retries. Making runs extremely small can increase repeated input loading, publication traffic and scheduling overhead. Immutable input references and permitted per-host caches may amortize staging without requiring immortal numerical processes. No numerical timing investigation is authorized by this assessment.
+
+### Dagu: native platform candidate, not merely a workflow wrapper
+
+Official docs describe a single binary with no required database, broker or language runtime; Intel/Apple Silicon macOS builds are published. There is a native [macOS launchd deployment guide](https://docs.dagu.sh/server-admin/deployment/macos), not merely a development-server example. Its example is a GUI-session LaunchAgent; choose the required boot/login lifetime explicitly instead of claiming machine-wide unattended service from that example. The platform table explicitly says macOS is not tested on every change, so release/host admission remains necessary. See [system requirements](https://docs.dagu.sh/server-admin/system-requirements).
+
+A concrete direct-adoption shape is a coordinator-local root DAG that fans out a child DAG per unit, each executing an application-owned executable, followed by a validate/publish and package-aggregation stage. Dagu supports dynamic `parallel.items`, `parallel.max_concurrent`, and per-child `worker_selector` routing. Keep the parent local so named child resolution does not require a worker-local DAG catalogue. Workers execute whole child DAGs; arbitrary inline steps are not independently assigned to different machines. See [sub-DAGs](https://docs.dagu.sh/writing-workflows/sub-dags), [execution control](https://docs.dagu.sh/writing-workflows/execution-control) and [worker labels](https://docs.dagu.sh/server-admin/distributed/worker-labels).
+
+What could be omitted: custom coordinator API/UI/history, dependency/fan-out scheduler, worker polling/dispatch, label-based placement, ordinary retry/concurrency configuration and run-level drain plumbing. Application code supplies unit manifests, the executable, validation/canonical publication and aggregation. No custom Go agent or second scheduler is assumed.
+
+Consequential boundaries from the documentation:
+
+- [Workers](https://docs.dagu.sh/server-admin/distributed/workers/) poll via gRPC; a heartbeat stale for over 30 seconds causes running tasks to be marked failed. This conflicts with the original no-reassignment-with-uncertain-owner requirement, but may be acceptable with cheap, repeatable attempts. It does not prove old computation stopped. Retry/cleanup behavior under coordinator loss still needs verification for a selected release.
+- [Worker deployment](https://docs.dagu.sh/server-admin/distributed/workers/shared-nothing) explicitly requires coordinator connectivity throughout execution. Do not use that mode as a disconnected Kaggle executor. Offline execution/import can remain a separate finite application path producing the same unit-result contract.
+- [File dependencies](https://docs.dagu.sh/writing-workflows/file-dependencies) create fresh dispatch snapshots, with 64 MiB compressed / 256 MiB extracted limits including the DAG and selected files. Do not embed the existing 118.7–255.5 MiB monthly payloads in each unit dispatch by default. Use small manifests and separately staged immutable inputs; pin definitions so redispatch does not silently use changed source files.
+- [Artifacts](https://docs.dagu.sh/writing-workflows/artifacts) are worker-staged and uploaded before distributed run completion. They are not inherently our immutable acceptance store: local writes go directly to the final directory, stdout/stderr artifact paths are replaced on attempts, and history cleanup removes run artifacts. Use unique attempt paths, completed manifests and explicit canonical publication/retention. Partial/delayed delivery must not make a unit complete.
+- A sub-DAG parent's `results` preserve item order, but its successful `outputs` array omits failed children; never associate results to units by success-array index. Include stable IDs in every result. Parent-step retries can rerun a child as a unit; application result reuse must remain valid across platform attempts.
+- [Operations](https://docs.dagu.sh/server-admin/operations) offers no-new-runs draining with time limits; this is not proof of our original per-unit gate within an opaque multi-unit program. One unit per child makes the platform boundary useful. [Execution control](https://docs.dagu.sh/writing-workflows/execution-control) documents process-tree termination on step timeout; qualify that on the actual Mac release/backend rather than treating the documentation as a test result.
+- Labels such as `memory=64G` are exact-match routing values, not demonstrated physical RAM/VRAM enforcement. Explicit host/profile limits and residual-process accounting remain necessary.
+- The inspected upstream [license](https://github.com/dagu-org/dagu/blob/main/LICENSE) is GPLv3. Review applicable obligations before distributing modifications or embedding code; prefer using the platform as a separate executable over importing its implementation into Hermes.
+
+**Provisional finding:** Dagu merits a direct-replacement check under the smaller contract. The timeout/ownership mismatch is no longer an automatic disqualifier if the operator accepts repeated attempts; durable publication, native process cleanup and acceptable unit cost become the decisive questions.
+
+### Prefect: direct adoption becomes credible under the smaller contract
+
+Official [installation](https://docs.prefect.io/v3/get-started/install), [server](https://docs.prefect.io/v3/concepts/server) and [process-worker](https://docs.prefect.io/v3/concepts/workers) docs provide a native Python deployment path without requiring a Linux VM/container. No explicit macOS production certification matrix was found. One API/background-service instance can use SQLite/in-memory defaults for a lightweight deployment; PostgreSQL is the documented production preference. More compute workers do not inherently require more API processes. Multiple API/background-service processes introduce PostgreSQL/Redis requirements and duplicate-scheduling risks if their coordination is misconfigured; do not add that topology by default. See [server CLI](https://docs.prefect.io/v3/how-to-guides/self-hosted/server-cli) and [self-hosting](https://docs.prefect.io/v3/advanced/self-hosted). Native service supervision is deployment work; the documented daemonization example is systemd, not an exercised launchd recipe.
+
+A concrete direct-adoption shape is **one independent deployment flow run per unit**, carrying a small immutable spec reference. Compatible process workers on multiple hosts poll the appropriate work pool. The application flow checks for an existing canonical result, runs the executable in a private foreground workspace, validates and durably publishes its result, then returns a small canonical reference. Aggregation is a separate flow/tool over expected IDs, not a parent process whose survival is required. Finite Kaggle results enter through the same application validator/publisher without fabricating Prefect history. No custom Hermes worker or live-process adoption protocol is assumed.
+
+Separate deployment runs provide multi-host placement; `.submit()`/`.map()` inside a normal flow provide explicit task concurrency through its selected task runner, not automatic multi-host placement. This shape does not require adding Dask/Ray. Split pools/queues/deployments for incompatible environments or fixed profiles, rather than treating an arbitrary native executable as portable. See [work pools](https://docs.prefect.io/v3/concepts/work-pools), [running deployments](https://docs.prefect.io/v3/how-to-guides/deployments/run-deployments) and [task runners](https://docs.prefect.io/v3/develop/task-runners).
+
+What could be omitted: custom dependency dispatch, queue/pool scheduling, polling, ordinary retry/count-concurrency plumbing, execution-state history, UI and notifications. The adapter owns application semantics and result publication, not scheduling authority. Adopting Prefect explicitly trades the proposed Go-only deployment for managed Python environments on coordinator/worker hosts; it does not require rewriting C++ kernels in Python.
+
+Consequential boundaries:
+
+- [Result persistence](https://docs.prefect.io/v3/advanced/results) is opt-in and otherwise defaults to worker-local storage when enabled without an explicit store. Persisted return values do not retain arbitrary files written by a subprocess. Configure accessible durable result storage, and return references to retained artifacts, not paths into a disposable workspace.
+- The [default cache policy](https://docs.prefect.io/v3/concepts/caching) includes flow-run identity. Use an explicit stable application unit key and shared storage if results must be reused across replacement flow/deployment runs. Explicitly version the external executable, inputs and validator: Python task source alone does not capture them. A cache hit cannot substitute for the application result contract.
+- [Transactions](https://docs.prefect.io/v3/advanced/transactions) default to isolation that permits duplicate execution/cache overwrites. Do not introduce distributed execution locks merely to forbid cheap duplicates. Instead, the application validates immutable attempt outputs and atomically creates its canonical unit reference; a losing publisher returns the already chosen valid reference. This preserves first-valid acceptance even if both cache writers finish. A crash after application publication but before platform success is recovered by the next run's canonical-result check.
+- [Ordinary retries](https://docs.prefect.io/v3/how-to-guides/workflows/retries) are not automatic host-loss recovery. Self-hosted [zombie detection](https://docs.prefect.io/v3/advanced/detect-zombie-flows) needs explicit automation; the Cloud default policy is not a self-hosted guarantee. Replacement deployment runs need a bounded overall resubmission policy or initially an operator rerun. Repeatedly creating new runs must not reset a global retry budget indefinitely.
+- Worker/pool concurrency limits and [global slots](https://docs.prefect.io/v3/concepts/global-concurrency-limits) are cooperative admission, not physical resource enforcement. Lease expiry may free slots while disconnected computation continues. Use foreground finite executables, explicit profiles, one worker authority per host and acceptable duplicate resource envelopes. A wrapper's cleanup cannot run after its own `SIGKILL`.
+- [Cancellation](https://docs.prefect.io/v3/advanced/cancel-workflows) can reach a terminal metadata state without enforcing termination when infrastructure identity is missing or cleanup times out. The documented process-worker implementation is not a proved arbitrary descendant-tree containment contract. Cheap retry does not make unbounded orphan processes acceptable; qualify native behavior or explicitly retain manual cleanup as an operating limitation.
+- Offline finite exchange remains application integration. An isolated LAN server is not the same as a disconnected remote executor; preserve partial unit results and merge through the ordinary publisher.
+
+**Provisional finding:** Prefect can replace most of the proposed infrastructure if foreground jobs are cheap to repeat, shared durable storage is available, and the operator accepts the Python deployment. It is not merely a dashboard above an inevitable custom executor. Restoring strict process survival, exclusive uncertain ownership or transparent offline recovery would change that conclusion.
+
+### Recommendation and decisive evidence
+
+Continue toward **direct platform adoption**, not a Hermes wrapper by default. Dagu is the first candidate for native packaging simplicity; Prefect is a credible second candidate with a richer Python integration/caching model. The current documentary evidence does not yet establish that either meets the actual Mac lifecycle/resource envelope. Native service examples, product state names and cache features are not runtime verification.
+
+Before a later authorized synthetic check, settle:
+
+1. Maximum acceptable lost compute/preparation time per atomic unit and maximum concurrent duplicate CPU/RAM/VRAM cost. No real-study optimization has been demonstrated to fit that tolerance.
+2. Connected host/OS list and one accessible durable result-store/publication boundary. Preserve first-valid accepted references independently of platform retries and retention.
+3. Whether a separate finite Kaggle executable/import path is sufficient; requiring an offline platform worker would retain much more custom machinery.
+
+Only three synthetic cross-boundary checks are needed initially (not run or authorized here):
+
+- **Native restart/replacement:** a Mac coordinator and two workers run finite synthetic executables; restart the coordinator, then lose/partition a worker. Show bounded resubmission and actual child/resource behavior, not just a reassuring UI state. Select/pin the release first.
+- **Duplicate publication:** two attempts for the same unit produce independently valid differing candidates; fail one after durable publication but before platform acknowledgment, then retry under a new run identity. Prove first-valid canonical stability, retained completed results and no partial publication; changed input/runtime identity must require new work.
+- **Partial package and offline merge:** finish some expected units, fail one and omit another; retry aggregation, import synthetic offline results twice and change future profiles while another unit executes. Package completion requires the exact expected valid IDs, and neither policy change nor aggregation retry discards prior units.
+
+If those pass with small application adapters, omit the custom Hermes coordinator, agent, control database and session protocol. If adoption requires recreating them to satisfy a specific retained requirement, identify that requirement before choosing a wrapper or returning to a custom build. No installation, dependency change, deployment, live-job control or scientific inspection was performed for this assessment.
+
 ## Sources
 
 These Dask links are retained references from the dated investigation, not newly fetched or reverified during relocation.

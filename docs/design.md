@@ -4,6 +4,8 @@
 
 **Review decision:** operator-invoked host-service installation, reversible uninstallation and per-platform scripts bundled with agent builds are agreed requirements; see [service lifecycle and packaging](#service-lifecycle-and-packaging). The remaining architecture is still proposed unless explicitly agreed during review.
 
+**Build/adopt review (November 22):** the operator is now exploring Dagu/Prefect directly, with inexpensive retryable atomic runs and later package aggregation. The [reuse assessment](distributed-execution-discovery.md#10-reuse-assessment-retryable-atomic-runs-november-22) records that proposed smaller contract and platform evidence. This document remains the custom-build option; its strong computation-survival/ownership invariants must not be used to reject alternatives if the operator accepts the relaxation. No platform or requirement replacement has been approved.
+
 ## 1. Design in one paragraph
 
 Build a Go controller, Go worker agent and Go CLI. One controller owns a local transactional metadata database and immutable artifact directory. Independently supervised agents own application processes and persist issued work/results locally. Agents pull bounded assignments, run an application-owned executable, publish results per application-defined unit, and reconnect without restarting computation when the controller disappears. Scheduling uses compact metadata, not input payloads. A finite agent can run the same assignment/result contracts offline through explicit export/import. Start with one controller host, connected LAN agents and bounded file-based batch exchange—not a broker, cluster scheduler, cloud job manager or shared numerical runtime.

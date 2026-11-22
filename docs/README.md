@@ -8,7 +8,7 @@ The operator has now requested a concrete design based on discovery. [The first-
 
 1. **This handoff:** authoritative record of agreed direction and documentation index.
 2. [Proposed first-release design](design.md): authoritative home for proposed architecture, contracts, failure behavior, verification gates and decisions requiring review.
-3. [Distributed execution discovery and Dask assessment](distributed-execution-discovery.md): requirements, rough mechanisms and dated November 21, 2026 documentary comparison. Its earlier sketches are historical proposals, not competing architecture contracts.
+3. [Distributed execution discovery and reuse assessment](distributed-execution-discovery.md): dated Dask comparison plus the [November 22 Dagu/Prefect assessment](distributed-execution-discovery.md#10-reuse-assessment-retryable-atomic-runs-november-22). The operator has reopened build versus adopt, exploring retryable atomic runs and later aggregation rather than requiring all surviving computations to be preserved. This relaxation is proposed, not yet a replacement of the earlier recovery requirements.
 4. [WP05-D distributed-compute lessons](wp05d-distributed-compute-lessons.md): historical failure analysis motivating requirements, not Hermes readiness evidence or operating policy.
 
 The two source documents were relocated from Perry's `docs/research/`. Their links to `../../perry/root/docs/` are **optional historical evidence requiring a sibling Perry checkout**. Hermes discovery and this handoff do not require those files. Inline `perry/...`, `scratch/...` and other historical source paths refer to Perry, not files to import into Hermes. Dated findings and numerical observations remain historical; relocation did not rerun their checks or reverify external sources.
@@ -18,8 +18,8 @@ The two source documents were relocated from Perry's `docs/research/`. Their lin
 ### Ownership, technology and contracts
 
 - Explicit reusable contracts are the central deliverable for future consumers. Hermes is not a Perry feature or a shared numerical library.
-- **Custom infrastructure is favored over Dask** because lifecycle control, durable independent execution and offline finite batches dominate. A concrete Go design is now proposed for review. Retain the Dask evaluation as evidence, not an instruction to implement Dask or proof from a running cluster.
-- **Hermes infrastructure will be Go.** Controller, worker agent and CLI are intended Go components. Applications may write computations in any language, including Python, C++ or CUDA. Numerical environments belong to applications, not infrastructure.
+- Earlier discovery favored **custom infrastructure over Dask** because lifecycle control, durable independent execution and offline finite batches dominated. The operator has now requested a direct Dagu/Prefect reuse assessment under a potentially smaller atomic-run contract. No platform has been selected; do not build a second scheduler merely to preserve the proposed Hermes shape. The custom Go design remains an option, not an adoption constraint.
+- **Hermes infrastructure will be Go** under the custom-build direction. Controller, worker agent and CLI are intended Go components. Applications may write computations in any language, including Python, C++ or CUDA. Numerical environments belong to applications, not infrastructure. Direct Prefect adoption would require explicitly revisiting this deployment decision, not implementing Go components merely to wrap it.
 - Earlier speculation about Python for Hermes batch infrastructure is superseded by the operator's direction: **“We're Go, others write what they want.”** Go packaging/deployment in Kaggle remains an investigation question, not a reason to assume a Python worker agent.
 - Agents are native OS/architecture-specific binaries, not VM bytecode. The operator requires an explicit host inventory and target build recipe; the [host and build contract](design.md#agent-host-and-build-contract) specifies the data to retrieve and the proposed `just build-agent <goos> <goarch>` interface. Matching a compilation target is not platform/resource admission.
 
@@ -36,6 +36,8 @@ The two source documents were relocated from Perry's `docs/research/`. Their lin
 
 ### Failure and execution environments
 
+- The coordinator must run natively on macOS without requiring a Linux VM/container. Development-only macOS compatibility is not evidence of an operational deployment path.
+- The following original computation-survival requirements are under review in the [retryable atomic-run proposal](distributed-execution-discovery.md#10-reuse-assessment-retryable-atomic-runs-november-22); they have not been silently removed.
 - Controller crash/reconnect to surviving workers is a **core requirement**. The controller process should be cheaply replaceable; controller recovery must not restart surviving issued computations or repeatedly process all completed payloads.
 - After worker crash, resume missing units only after ownership reconciliation; do not repeat completed units. Distinguish controller crash, scheduler crash and worker crash. Losing an interactive client is not evidence of scheduler/controller crash survival.
 - Connected LAN workers and finite/offline Kaggle batches share work/result semantics without pretending to share connectivity or live control capabilities.
