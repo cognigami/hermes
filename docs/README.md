@@ -23,11 +23,14 @@ The two source documents were relocated from Perry's `docs/research/`. Their lin
 - Earlier speculation about Python for Hermes batch infrastructure is superseded by the operator's direction: **“We're Go, others write what they want.”** Go packaging/deployment in Kaggle remains an investigation question, not a reason to assume a Python worker agent.
 - Agents are native OS/architecture-specific binaries, not VM bytecode. The operator requires an explicit host inventory and target build recipe; the [host and build contract](design.md#agent-host-and-build-contract) specifies the data to retrieve and the proposed `just build-agent <goos> <goarch>` interface. Matching a compilation target is not platform/resource admission.
 
+- Operator-invoked host-service installation with reversible uninstallation is agreed. Each agent build must bundle its OS-specific install/uninstall scripts and required service templates; see the [service lifecycle and packaging contract](design.md#service-lifecycle-and-packaging). This does not authorize implementation or installation.
+
 ### Work, policy and attempts
 
 - Separate stable work, mutable operational policy and individual attempts. Changing machines, concurrency, memory or thread profiles for **future work** must not restart the run. Live mutation of a running solver is not required.
 - A profile change may drain/replace worker processes while other workers continue. Policy application boundaries still need precise contracts.
 - Applications define atomic computation units, for example one optimization. A packager groups them at a higher level; packages are **not indivisible acceptance units**.
+- Accept the first application-valid candidate to commit acceptance. Differing outputs are retained and reported, not a reason to pause acceptance or independent work; see [publication, validation and conflicts](design.md#9-publication-validation-and-conflicts).
 - Drain finishes the current safe unit, publishes completed units and returns/repackages the remainder under the same unit identities. No arbitrary optimizer checkpoint/resume promise follows from this.
 - Both individual-worker and whole-run drain need finite deadlines and explicit forced-stop behavior. An interrupted long unit may lose in-flight work; acceptable bounds remain open.
 

@@ -2,6 +2,8 @@
 
 **November 21, 2026 · Proposed design for review, not an implementation release.** The operator requested a concrete design based on the [handoff](README.md), [discovery](distributed-execution-discovery.md) and [WP05-D lessons](wp05d-distributed-compute-lessons.md). Choices below are proposals, not newly approved requirements or exercised guarantees. No code, prototype, platform admission, data transfer or Perry cutover has been performed. This is the authoritative home for the proposed architecture and contracts; the handoff remains the index and record of agreed requirements.
 
+**Review decision:** operator-invoked host-service installation, reversible uninstallation and per-platform scripts bundled with agent builds are agreed requirements; see [service lifecycle and packaging](#service-lifecycle-and-packaging). The remaining architecture is still proposed unless explicitly agreed during review.
+
 ## 1. Design in one paragraph
 
 Build a Go controller, Go worker agent and Go CLI. One controller owns a local transactional metadata database and immutable artifact directory. Independently supervised agents own application processes and persist issued work/results locally. Agents pull bounded assignments, run an application-owned executable, publish results per application-defined unit, and reconnect without restarting computation when the controller disappears. Scheduling uses compact metadata, not input payloads. A finite agent can run the same assignment/result contracts offline through explicit export/import. Start with one controller host, connected LAN agents and bounded file-based batch exchange—not a broker, cluster scheduler, cloud job manager or shared numerical runtime.
@@ -105,11 +107,11 @@ Do not use one overloaded status to describe computation, delivery and acceptanc
 - **Unit:** `blocked → ready → owned`; candidate delivery/validation may follow; `accepted` is terminal for ordinary execution. Unsuccessful attempts can return an unaccepted unit to `ready` only after ownership and publication reconciliation.
 - **Assignment execution:** `issued → acknowledged → running → quiescent`, or `uncertain` when ownership cannot be established. `issued` already reserves its units, even if the response was lost.
 - **Delivery:** local-spooled, transfer-pending, controller-published, or delivery-failed. Quiescent execution may still have pending delivery.
-- **Candidate:** published, validation-pending, validating, accepted, rejected, or conflict. A validator crash is not a domain rejection.
+- **Candidate:** published, validation-pending, validating, valid, or rejected. Acceptance is recorded separately; differing outputs are a reported conflict, not a validation-blocking state. A validator crash is not a domain rejection.
 
 Use relational constraints to enforce one unresolved owner per unit and one acceptance per unit. Readiness is an indexed/materialized metadata property updated on registration and acceptance, not discovered by rereading every historical result.
 
-A valid application outcome may be “no solution” if its validator accepts that conclusion. It still counts as a completed unit; the application decides whether dependent work becomes eligible. Dependencies refer to explicit accepted outcomes, not merely terminated processes. Failed or conflicting prerequisites leave dependents blocked with a reason. The application producer may register later stages as their definitions become known.
+A valid application outcome may be “no solution” if its validator accepts that conclusion. It still counts as a completed unit; the application decides whether dependent work becomes eligible. Dependencies refer to explicit accepted outcomes, not merely terminated processes. Prerequisites without an accepted result leave dependents blocked with a reason; a reported difference between candidates does not block an accepted prerequisite. The application producer may register later stages as their definitions become known.
 
 ## 7. Connected protocol and scheduling
 
@@ -164,10 +166,12 @@ Application compliance is part of admission: the agent cannot infer safe boundar
 1. Agent locally publishes a complete per-unit manifest and referenced bytes before announcing a candidate.
 2. Controller receives missing blobs through bounded transfer handlers; verifies/publishes each once. It durably records the candidate and acknowledges **raw publication**.
 3. A bounded validation queue runs the pinned application validator. Controller scheduling/heartbeats never wait synchronously for it. Validators may inspect large results; this is explicitly measured work.
-4. A successful verdict atomically establishes acceptance and dependency changes. Rejecting a candidate preserves the verdict and bytes; it does not silently fabricate a domain result or automatically repeat expensive computation.
+4. The first application-valid candidate to commit acceptance atomically establishes the canonical result and dependency changes. Concurrent successful verdicts cannot overwrite that acceptance. Rejecting a candidate preserves the verdict and bytes; further computation follows the recorded retry policy, not an unconditional recomputation.
 5. Agent may discard its transferred copies after raw-publication acknowledgment under retention policy; it need not wait for domain acceptance. It must not delete unpublished results on controller disconnect.
 
-Identical candidate redelivery is idempotent. Different bytes for the same unit are not assumed equivalent: preserve them and report `conflict`; never overwrite canonical acceptance. If an accepted result already exists, leave it immutable and expose the conflict. An application may explicitly define a pinned equivalence check; absent that, resolution requires operator/application action. Pending validation/conflict blocks a fresh computation retry unless explicitly resolved.
+**Agreed during design review:** accept the first candidate that passes application validation and commits acceptance; do not pause acceptance or independent work merely because another candidate differs. Validation must establish suitability for downstream use, not just file/envelope correctness. Arrival order, retry status and worker identity are not reliability scores; Hermes does not invent one.
+
+Identical candidate redelivery is idempotent. Preserve differing candidates and report `conflict` without requiring operator resolution before progress. Validate candidates independently; a known difference does not prevent a valid candidate from becoming canonical. Never automatically overwrite canonical acceptance or invalidate downstream work because a later candidate differs. An application may supply a pinned equivalence check if useful, but it is not a default gate. Reuse retained candidates before starting another computation. If none passes validation, dependent work remains blocked for lack of a valid result; independent eligible work continues, and missing work follows authorized bounded retry policy.
 
 Late results from a known prior attempt remain candidates for the same immutable unit, not new work. Validate them normally. If they establish acceptance while a retry is live, request that retry's drain/stop, preserve honest ownership until acknowledged, and do not claim zero duplicate execution. A forced retry of uncertain work is therefore an exceptional operator override that records possible duplicate execution, not ordinary recovery.
 
@@ -278,6 +282,20 @@ uname -r
 
 Map Linux → `linux`, Darwin → `darwin`, Windows → `windows`; map `x86_64`/`AMD64`/`X64` → `amd64`, and `aarch64`/`arm64`/`Arm64` → `arm64`. Under translation, shell/process architecture can differ from native architecture: confirm native execution before selecting a build; do not silently treat a translated shell as host admission. These commands identify the target, **not** the remaining resource/enforcement inventory. On Linux retrieve distribution information from `/etc/os-release` and effective cgroup/container limits; on Windows/macOS retrieve OS/resource/device details from their system facilities. Go need not be installed to collect the inventory.
 
+#### Service lifecycle and packaging
+
+**Agreed during design review; not implemented.** Persistent-host agents use the host's service manager. Installation/bootstrap is explicitly operator-invoked; the host supervises the agent, and the controller manages assignments and reconciliation. Loss of contact is not permission for the controller to install or restart a remote service. Automatic service restart policy remains a deployment choice.
+
+Each `just build-agent <goos> <goarch>` output must be a deployment directory containing the target executable, that OS's install/uninstall scripts and any required service-definition templates. macOS uses `launchd`; native Windows uses Service Control Manager and requires a service-compatible agent. The Linux service manager must be selected and qualified before releasing its installer. WSL is a Linux deployment, not a Windows service deployment.
+
+- `darwin` and `linux` packages include `install.sh` and `uninstall.sh`; `windows` packages include `install.ps1` and `uninstall.ps1`.
+- Scripts run on the target host, require no Go/compiler/`just`, and document required privileges, configuration and installed locations. Package the scripts/templates alongside the binary; do not require the source checkout on the target.
+- Install and uninstall tolerate repetition safely. Installation must not start duplicate agents or silently discard existing identity, assignments or results.
+- Uninstall stops the agent and confirms its owned application processes are stopped, unregisters startup/restart behavior, and removes installed binaries and credentials. Preserve unpublished results and recovery state unless the operator explicitly requests a purge. Report failure or incomplete cleanup honestly; do not claim success if processes remain or ownership is uncertain. Uninstallation does not itself authorize the controller to reassign unresolved work.
+- Kaggle finite execution does not install a persistent host service: its notebook entrypoint stages and launches the finite agent. Host-service scripts are not used in that mode; no cross-session persistence is inferred.
+
+Keep platform scripts and any service templates under `deploy/agent/<goos>/`; the build copies that platform's deployment files into its target output directory. Script packaging does not certify service behavior or process-tree containment. Admission includes repeated install/uninstall, service startup independent of interactive login, preservation of recovery/results, and verification that uninstall leaves no running owned processes or registered service.
+
 #### Explicit cross-compilation recipe
 
 When the Go module and `cmd/hermes-agent` exist, expose **`just build-agent <goos> <goarch>`**. Both arguments are mandatory, including for a local build, so the build machine's architecture cannot accidentally choose the target. Proposed candidate pairs are `linux/{amd64,arm64}`, `darwin/{amd64,arm64}` and `windows/{amd64,arm64}`; this list identifies targets, **not a claim that their process/resource backends are implemented or admitted**. Build failure on a missing backend must remain a failure, never a no-op enforcement substitute.
@@ -304,6 +322,7 @@ build-agent goos goarch:
     GOOS="$target_os" GOARCH="$target_arch" CGO_ENABLED=0 \
         GOAMD64=v1 GOARM64=v8.0 \
         go build -trimpath -o "$out/hermes-agent$suffix" ./cmd/hermes-agent
+    cp -R "deploy/agent/$target_os/." "$out/"
 ```
 
 The Go version will be pinned when `go.mod` is introduced, with support for these ISA settings and a documented minimum target OS/kernel matrix. This recipe uses the build machine's Go toolchain; it does not run the cross-compiled program or prove compatibility on the destination. A POSIX builder can produce Windows `.exe` files; Windows build-machine support is not implied by this shell recipe. No compiler/`just` installation on agent hosts is required.
@@ -311,9 +330,9 @@ The Go version will be pinned when `go.mod` is introduced, with support for thes
 Examples, **after implementation**:
 
 ```sh
-just build-agent linux amd64   # dist/agent/linux-amd64/hermes-agent
-just build-agent darwin arm64  # dist/agent/darwin-arm64/hermes-agent
-just build-agent windows amd64 # dist/agent/windows-amd64/hermes-agent.exe
+just build-agent linux amd64   # dist/agent/linux-amd64/ (binary + install/uninstall files)
+just build-agent darwin arm64  # dist/agent/darwin-arm64/ (binary + install/uninstall files)
+just build-agent windows amd64 # dist/agent/windows-amd64/ (binary + install/uninstall files)
 ```
 
 Deploy the selected executable using the existing artifact identity/transport mechanism; do not invent a second binary registry. The release identifies its source/version, target and ISA baseline, Go toolchain version and executable digest. Confirm the agent starts on the actual target and reports the expected platform/protocol before admitting it; then qualify process-tree/resource behavior separately. Matching OS/architecture is necessary, not sufficient. Application Python/C++/CUDA dependencies are neither supplied nor certified by compiling the agent.
@@ -346,5 +365,6 @@ This proposal makes the architecture concrete without pretending every deploymen
 5. **Set workload-specific assignment bounds and drain-loss tolerance.** Finite deadlines are required; universal numeric defaults would be invented without workload evidence. Maximum atomic-unit loss must be acceptable to the consumer.
 6. **Accept explicit finite file exchange first?** Automated cloud lifecycle management is not necessary for shared offline contracts, but may be a later consumer requirement. Kaggle Go/runtime admission remains a release gate.
 7. **Confirm application acceptance/equivalence policy and data permissions.** Domain semantics and allowed staging locations cannot be selected by infrastructure.
+8. **Deferred: check static versus dynamic graphs with the WP05D revival coordinator and designer.** The operator reports that D1 and D2 ran first, then D3 was based on their results, and suspects this motivated staged registration in the discovery/design; that historical motivation is not yet confirmed. The current review preference is fixed submitted graphs with accepted artifacts reused by explicit follow-up submissions. Before settling the contract, ask whether the D1/D2 → D3 workflow actually requires adding work within the same run, or whether separate fixed-graph submissions suffice. Treat the existing later-stage registration and registration-closure provisions as provisional pending that check. **Do not contact either participant now: WP05D is mid-run. Revisit only when the operator authorizes the discussion.**
 
 Approving this document would settle a design direction, not authorize experiments, data movement, dependency installation or Perry job control. Those releases remain explicit.
