@@ -75,6 +75,9 @@ func (r *runner) grant(id string) (bool, error) {
 		r.j.GateClosed = true
 		return false, e
 	}
+	if e := r.syntheticStopLocked("unit"); e != nil {
+		return false, e
+	}
 	return true, nil
 }
 func leafExitProven(err error) bool {
@@ -82,6 +85,12 @@ func leafExitProven(err error) bool {
 	return err == nil || errors.As(err, &exited)
 }
 func (r *runner) gateOpenLocked() (bool, error) {
+	if r.admission != nil {
+		if e := r.admission.err(); e != nil {
+			r.j.GateClosed = true
+			return false, e
+		}
+	}
 	a := r.j.Work.Assignment
 	now := time.Now()
 	wall := now.UTC()

@@ -10,9 +10,11 @@ import (
 	"golang.org/x/sys/unix"
 	"hermes/internal/artifacts"
 	"hermes/internal/contracts"
+	"hermes/internal/platform"
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -20,6 +22,8 @@ type Config struct {
 	Root                                    string
 	Workers                                 []string
 	MaxAttempts                             int
+	MaxConcurrent                           int
+	ResourcePolicy                          *contracts.ResourcePolicy
 	StopAfter, TerminateAfter, HandoffAfter time.Duration
 	Profile                                 string
 	Runtime                                 string
@@ -28,17 +32,40 @@ type Config struct {
 	MaxArtifactBytes                        int64
 }
 type Controller struct {
-	cfg   Config
-	db    *sql.DB
-	store *artifacts.Store
-	lock  *os.File
+	cfg                Config
+	db                 *sql.DB
+	store              *artifacts.Store
+	lock               *os.File
+	policyCache        map[int64]contracts.ResourcePolicy
+	instance           string
+	controllerObserved contracts.HostObservation
+	transferSlots      chan struct{}
+	readyCursor        map[string]int64
+	validatorCursor    int64
+	transferMu         sync.Mutex
+	transferWG         sync.WaitGroup
+	closing            bool
+	lifetime           context.Context
+	cancelLifetime     context.CancelFunc
 	// Only tests set this seam to terminate at actual metadata commit boundaries.
 	testCommitBoundary func(operation string, committed bool) error
 }
 
 func Open(cfg Config) (*Controller, error) {
+	if cfg.ResourcePolicy == nil {
+		return nil, errors.New("approved resource policy required")
+	}
+	if err := cfg.ResourcePolicy.Validate(); err != nil {
+		return nil, err
+	}
 	if cfg.Root == "" || len(cfg.Workers) == 0 || cfg.Profile == "" || cfg.Runtime == "" || cfg.Validator == "" || len(cfg.ValidatorArgv) == 0 || cfg.MaxArtifactBytes <= 0 {
 		return nil, errors.New("incomplete controller config")
+	}
+	if cfg.MaxConcurrent == 0 {
+		cfg.MaxConcurrent = 64
+	}
+	if cfg.MaxConcurrent < 1 || cfg.MaxConcurrent > 64 {
+		return nil, errors.New("invalid concurrent assignment bound")
 	}
 	if cfg.MaxAttempts == 0 {
 		cfg.MaxAttempts = 2
@@ -75,13 +102,18 @@ func Open(cfg Config) (*Controller, error) {
 		f.Close()
 		return nil, fmt.Errorf("controller authority already held: %w", e)
 	}
-	c := &Controller{cfg: cfg, lock: f}
+	c := &Controller{cfg: cfg, lock: f, policyCache: map[int64]contracts.ResourcePolicy{}, instance: randomID(), transferSlots: make(chan struct{}, 16), readyCursor: map[string]int64{}}
+	c.lifetime, c.cancelLifetime = context.WithCancel(context.Background())
 	success := false
 	defer func() {
 		if !success {
 			c.Close()
 		}
 	}()
+	c.controllerObserved, e = platform.ObserveResources(cfg.Root)
+	if e != nil {
+		return nil, e
+	}
 	c.store, e = artifacts.New(filepath.Join(cfg.Root, "artifacts"), cfg.MaxArtifactBytes)
 	if e != nil {
 		return nil, e
@@ -114,13 +146,32 @@ func Open(cfg Config) (*Controller, error) {
 	if _, e = c.db.Exec(controlSchema); e != nil {
 		return nil, e
 	}
-	// Interrupted validation did not commit an operational failure. Refund its
-	// claim so even an interrupted third invocation can finish after recovery.
-	if _, e = c.db.Exec("UPDATE candidates SET state='pending',attempts=max(attempts-1,0) WHERE state='validating'"); e != nil {
+	if _, e = c.db.Exec(resourceSchema); e != nil {
+		return nil, e
+	}
+	if _, e = c.db.Exec(ingressSchema); e != nil {
 		return nil, e
 	}
 	tx, err := c.db.Begin()
 	if err != nil {
+		return nil, err
+	}
+	if err = installReadiness(tx); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	if err = restoreIngress(tx); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	if err = c.bootstrapResources(tx, *cfg.ResourcePolicy); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	// Interrupted invocation is not a completed validation failure. Preserve
+	// child-ownership claims before requeueing its candidate/refunding attempt.
+	if _, err = tx.Exec("UPDATE candidates SET state='pending',attempts=max(attempts-1,0) WHERE state='validating'"); err != nil {
+		tx.Rollback()
 		return nil, err
 	}
 	if err = c.reconcileTerminal(tx); err != nil {
@@ -130,10 +181,20 @@ func Open(cfg Config) (*Controller, error) {
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
+	if err = c.cleanupExitedScratch(context.Background()); err != nil {
+		return nil, err
+	}
 	success = true
 	return c, nil
 }
 func (c *Controller) Close() error {
+	c.transferMu.Lock()
+	c.closing = true
+	c.transferMu.Unlock()
+	if c.cancelLifetime != nil {
+		c.cancelLifetime()
+	}
+	c.transferWG.Wait()
 	var e error
 	if c.db != nil {
 		e = c.db.Close()
@@ -242,7 +303,7 @@ func (c *Controller) submit(tx *sql.Tx, s contracts.Submission) (any, error) {
 	}
 	units := map[string]contracts.Unit{}
 	for _, u := range s.Units {
-		if u.Runtime != c.cfg.Runtime || u.Validator != c.cfg.Validator || len(u.RequiredCapabilities) > 0 {
+		if u.Runtime != c.cfg.Runtime || u.Validator != c.cfg.Validator {
 			return nil, errors.New("unsupported application contract")
 		}
 		units[u.UnitID] = u
@@ -315,99 +376,13 @@ func (c *Controller) submit(tx *sql.Tx, s contracts.Submission) (any, error) {
 			return nil, e
 		}
 	}
+	if e := registerReadiness(tx, s); e != nil {
+		return nil, e
+	}
+	if e := c.registerRequirements(tx, s); e != nil {
+		return nil, e
+	}
 	return contracts.Acknowledgment{SchemaVersion: 1, RunID: s.RunID}, nil
-}
-func (c *Controller) poll(tx *sql.Tx, p contracts.PollRequest) (any, error) {
-	if p.SchemaVersion != 1 || !c.allowedWorker(p.WorkerID) || p.SessionID == "" || len(p.SessionID) > 256 {
-		return nil, errors.New("invalid worker session")
-	}
-	var b []byte
-	e := tx.QueryRow("SELECT manifest FROM assignments WHERE worker=? AND final IS NULL AND NOT EXISTS(SELECT 1 FROM terminal_evidence t WHERE t.assignment_id=assignments.id) ORDER BY id LIMIT 1", p.WorkerID).Scan(&b)
-	if e == nil {
-		var a contracts.Assignment
-		if e = json.Unmarshal(b, &a); e != nil {
-			return nil, e
-		}
-		if a.SessionID != p.SessionID {
-			return nil, errors.New("unfinished prior session: reconciliation required")
-		}
-		// The original request outcome is replayed by mutate before this
-		// function. A different request cannot prove a lost spool never ran.
-		return nil, errors.New("unresolved assignment: original request retry or retained journal required; reconciliation deferred to S3")
-	}
-	if !errors.Is(e, sql.ErrNoRows) {
-		return nil, e
-	}
-	var paused int
-	if e = tx.QueryRow("SELECT COUNT(*) FROM target_controls WHERE kind='worker' AND target=? AND action='drain'", p.WorkerID).Scan(&paused); e != nil {
-		return nil, e
-	}
-	if paused > 0 {
-		return contracts.Work{SchemaVersion: 1}, nil
-	}
-	rows, e := tx.Query("SELECT run_id,manifest,digest FROM packages WHERE NOT EXISTS(SELECT 1 FROM target_controls t WHERE t.kind='run' AND t.target=packages.run_id AND t.action='drain') ORDER BY run_id,id")
-	if e != nil {
-		return nil, e
-	}
-	type pkg struct {
-		run, digest string
-		p           contracts.Package
-	}
-	var packages []pkg
-	for rows.Next() {
-		var x pkg
-		if e = rows.Scan(&x.run, &b, &x.digest); e != nil {
-			rows.Close()
-			return nil, e
-		}
-		if e = json.Unmarshal(b, &x.p); e != nil {
-			rows.Close()
-			return nil, e
-		}
-		packages = append(packages, x)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return nil, e
-	}
-	for _, x := range packages {
-		var selected []contracts.UnitRef
-		for _, r := range x.p.Units {
-			var eligible int
-			e = tx.QueryRow(`SELECT COUNT(*) FROM run_units u WHERE run_id=? AND unit_id=? AND ready=1 AND NOT EXISTS(SELECT 1 FROM owners o WHERE o.run_id=u.run_id AND o.unit_id=u.unit_id) AND NOT EXISTS(SELECT 1 FROM acceptances a WHERE a.run_id=u.run_id AND a.unit_id=u.unit_id) AND NOT EXISTS(SELECT 1 FROM candidates c WHERE c.run_id=u.run_id AND c.unit_id=u.unit_id) AND COALESCE((SELECT attempts FROM unit_attempts n WHERE n.run_id=u.run_id AND n.unit_id=u.unit_id),0)<? AND COALESCE((SELECT reason FROM unit_attempts n WHERE n.run_id=u.run_id AND n.unit_id=u.unit_id),'')=''`, x.run, r.UnitID, c.cfg.MaxAttempts).Scan(&eligible)
-			if e != nil {
-				return nil, e
-			}
-			if eligible == 1 {
-				selected = append(selected, r)
-			}
-		}
-		if len(selected) == 0 {
-			continue
-		}
-		now := time.Now().UTC()
-		a := contracts.Assignment{SchemaVersion: 1, AssignmentID: "assignment-" + contracts.Hash([]byte(p.WorkerID+":"+p.RequestID+":"+p.SessionID)), RunID: x.run, WorkerID: p.WorkerID, SessionID: p.SessionID, PackageDigest: x.digest, Units: selected, Runtime: c.cfg.Runtime, Profile: c.cfg.Profile, PolicyRevision: 1, StopNewUnitsAt: now.Add(c.cfg.StopAfter), TerminateAt: now.Add(c.cfg.TerminateAfter), HandoffDeadline: now.Add(c.cfg.HandoffAfter)}
-		if e = a.Validate(); e != nil {
-			return nil, e
-		}
-		if _, e = tx.Exec("INSERT INTO assignments(id,run_id,worker,session,manifest) VALUES(?,?,?,?,?)", a.AssignmentID, a.RunID, a.WorkerID, a.SessionID, encoded(a)); e != nil {
-			return nil, e
-		}
-		for _, r := range selected {
-			if _, e = tx.Exec("INSERT INTO unit_attempts VALUES(?,?,1,'',0) ON CONFLICT(run_id,unit_id) DO UPDATE SET attempts=attempts+1", a.RunID, r.UnitID); e != nil {
-				return nil, e
-			}
-			if _, e = tx.Exec("INSERT INTO members VALUES(?,?,?)", a.AssignmentID, a.RunID, r.UnitID); e != nil {
-				return nil, e
-			}
-			if _, e = tx.Exec("INSERT INTO owners VALUES(?,?,?)", a.RunID, r.UnitID, a.AssignmentID); e != nil {
-				return nil, e
-			}
-		}
-		return c.work(tx, a)
-	}
-	return contracts.Work{SchemaVersion: 1}, nil
 }
 func (c *Controller) work(tx *sql.Tx, a contracts.Assignment) (contracts.Work, error) {
 	w := contracts.Work{SchemaVersion: 1, Assignment: &a}
@@ -420,6 +395,17 @@ func (c *Controller) work(tx *sql.Tx, a contracts.Assignment) (contracts.Work, e
 		return w, e
 	}
 	w.Package = &p
+	if a.Allocation.Resources != (contracts.ResourceVector{}) {
+		policy, e := c.policyAt(tx, a.PolicyRevision)
+		if e != nil {
+			return w, e
+		}
+		budget, e := c.hostBudget(tx, policy, a.WorkerID, a.SessionID)
+		if e != nil {
+			return w, e
+		}
+		w.Budget = &budget
+	}
 	for _, r := range a.Units {
 		var b []byte
 		if e := tx.QueryRow("SELECT definition FROM definitions WHERE unit_id=?", r.UnitID).Scan(&b); e != nil {
@@ -465,7 +451,7 @@ func (c *Controller) candidate(tx *sql.Tx, r contracts.CandidateReport) (any, er
 			match = true
 		}
 	}
-	if !match || v.AssignmentID != a.AssignmentID || v.AttemptID != a.AssignmentID || a.Runtime != c.cfg.Runtime || a.Profile != c.cfg.Profile {
+	if !match || v.AssignmentID != a.AssignmentID || v.AttemptID != a.AssignmentID {
 		return nil, errors.New("candidate outside reserved assignment")
 	}
 	for _, f := range v.Files {
@@ -528,6 +514,22 @@ func (c *Controller) final(tx *sql.Tx, r contracts.FinalReport) (any, error) {
 	} else if !errors.Is(e, sql.ErrNoRows) {
 		return nil, e
 	}
+	var resourceEvidence []byte
+	err := tx.QueryRow("SELECT manifest FROM resource_failures WHERE assignment_id=? LIMIT 1", a.AssignmentID).Scan(&resourceEvidence)
+	if err == nil {
+		var stop contracts.ResourceStop
+		if err = json.Unmarshal(resourceEvidence, &stop); err != nil {
+			return nil, err
+		}
+		if stop.GrantIndex > minStarted {
+			minStarted = stop.GrantIndex
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if r.LaunchFailed && (minStarted != 0 || len(r.Completed) != 0 || len(r.Interrupted) != 0) {
+		return nil, errors.New("failed launch contradicts observed unit grants/results")
+	}
 	for _, id := range r.NeverStarted {
 		for i, u := range a.Units {
 			if id == u.UnitID && i < minStarted {
@@ -571,7 +573,10 @@ func (c *Controller) final(tx *sql.Tx, r contracts.FinalReport) (any, error) {
 	}
 	if previous == nil {
 		for _, id := range r.NeverStarted {
-			if _, e = tx.Exec("UPDATE unit_attempts SET attempts=max(attempts-1,0) WHERE run_id=? AND unit_id=?", a.RunID, id); e != nil {
+			if r.LaunchFailed {
+				continue
+			}
+			if _, e = tx.Exec("UPDATE unit_attempts SET attempts=max(attempts-1,0) WHERE run_id=? AND unit_id=? AND NOT EXISTS(SELECT 1 FROM resource_failures f WHERE f.run_id=unit_attempts.run_id AND f.unit_id=unit_attempts.unit_id AND f.assignment_id=?)", a.RunID, id, a.AssignmentID); e != nil {
 				return nil, e
 			}
 		}
@@ -582,6 +587,9 @@ func (c *Controller) final(tx *sql.Tx, r contracts.FinalReport) (any, error) {
 		}
 	}
 	if _, e = tx.Exec("DELETE FROM owners WHERE assignment_id=?", a.AssignmentID); e != nil {
+		return nil, e
+	}
+	if e = c.reconcileResourceAssignment(tx, a.AssignmentID); e != nil {
 		return nil, e
 	}
 	return contracts.Acknowledgment{SchemaVersion: 1, Quiescent: true}, nil

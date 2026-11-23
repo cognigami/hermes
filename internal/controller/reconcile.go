@@ -101,6 +101,9 @@ func (c *Controller) resolveLostSpool(tx *sql.Tx, r contracts.LostSpoolResolutio
 	if e = c.reconcileTerminal(tx); e != nil {
 		return nil, e
 	}
+	if e = c.reconcileResourceAssignment(tx, a.AssignmentID); e != nil {
+		return nil, e
+	}
 	return contracts.Acknowledgment{SchemaVersion: 1, Received: true}, nil
 }
 

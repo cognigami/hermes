@@ -11,7 +11,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+// ErrIngressCleanup means unpublished scratch could not be removed. Callers must
+// retain the affected transfer/storage reservation until exclusive-owner reopen
+// successfully cleans the abandoned scratch.
+var ErrIngressCleanup = errors.New("artifact ingress scratch cleanup failed")
 
 // Store requires exclusive application ownership of its directory. Published
 // files must never be modified or removed, including by callers of Open.
@@ -20,11 +26,15 @@ type Store struct {
 	root    string
 	maxSize int64
 	// Narrow I/O seams let package tests inject durability failures. Production
-	// stores always use the real filesystem sync operations below.
+	// stores always use the real filesystem operations below.
 	syncFile      func(*os.File) error
 	syncDirectory func(string) error
+	removeIngress func(string) error
 }
 
+// New must run under the caller's exclusive store authority before any live
+// publishers start. It removes only unacknowledged ingress scratch left by a
+// previous publisher process; canonical blobs are never garbage-collected.
 func New(root string, maxSize int64) (*Store, error) {
 	root = filepath.Clean(root)
 	if maxSize <= 0 {
@@ -45,7 +55,56 @@ func New(root string, maxSize int64) (*Store, error) {
 	if err := syncDir(filepath.Dir(root)); err != nil {
 		return nil, err
 	}
-	return &Store{root: root, maxSize: maxSize, syncFile: (*os.File).Sync, syncDirectory: syncDir}, nil
+	if err := cleanAbandonedIngress(root); err != nil {
+		return nil, err
+	}
+	return &Store{root: root, maxSize: maxSize, syncFile: (*os.File).Sync, syncDirectory: syncDir, removeIngress: os.Remove}, nil
+}
+
+func cleanAbandonedIngress(path string) error {
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	dir, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	// Scan names in bounded batches, retaining only abandoned scratch names.
+	// Finish enumeration before unlinking so directory changes cannot skip names.
+	var scratch []string
+	for {
+		names, err := dir.Readdirnames(128)
+		for _, name := range names {
+			if strings.HasPrefix(name, ".ingress-") {
+				scratch = append(scratch, name)
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
+	for _, name := range scratch {
+		info, err := root.Lstat(name)
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("nonregular entry in reserved ingress namespace")
+		}
+		if err := root.Remove(name); err != nil {
+			return err
+		}
+	}
+	if len(scratch) != 0 {
+		return dir.Sync()
+	}
+	return nil
 }
 
 func validDigest(digest string) bool {
@@ -64,7 +123,7 @@ func validDigest(digest string) bool {
 // artifact filesystem. It syncs bytes, installs without replacement, then syncs
 // directory metadata before success. Failure may leave an unreferenced blob,
 // never a success for incomplete bytes. Re-delivery still verifies incoming data.
-func (s *Store) Publish(ctx context.Context, digest string, size int64, src io.Reader) error {
+func (s *Store) Publish(ctx context.Context, digest string, size int64, src io.Reader) (result error) {
 	if !validDigest(digest) {
 		return errors.New("invalid SHA256 digest")
 	}
@@ -75,7 +134,11 @@ func (s *Store) Publish(ctx context.Context, digest string, size int64, src io.R
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
+	defer func() {
+		if err := s.removeIngress(f.Name()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			result = errors.Join(result, fmt.Errorf("%w: %w", ErrIngressCleanup, err))
+		}
+	}()
 	defer f.Close()
 	hash := sha256.New()
 	// Read the declared bytes and one extra byte, without overflow at MaxInt64.

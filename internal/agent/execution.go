@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hermes/internal/contracts"
+	"hermes/internal/platform"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,7 +18,7 @@ func (r *runner) execute(ctx context.Context) (resultErr error) {
 	a := r.j.Work.Assignment
 	bounded, cancel := context.WithDeadline(ctx, a.TerminateAt)
 	defer cancel()
-	dir := filepath.Join(r.cfg.Root, "assignment-"+contracts.Hash([]byte(a.AssignmentID)))
+	dir := filepath.Join(r.cfg.Root, "work")
 	if e := os.MkdirAll(dir, 0700); e != nil {
 		return e
 	}
@@ -40,7 +41,17 @@ func (r *runner) execute(ctx context.Context) (resultErr error) {
 	if e := r.stage(bounded, dir); e != nil {
 		return e
 	}
+	if e := r.trackWorktree(); e != nil {
+		return e
+	}
+	if e := r.checkOwnedSpool(); e != nil {
+		return e
+	}
 	r.mu.Lock()
+	if e := r.syntheticStopLocked("prepare"); e != nil {
+		r.mu.Unlock()
+		return e
+	}
 	open, gateErr := r.gateOpenLocked()
 	if !open {
 		r.j.Quiescent = true
@@ -52,6 +63,29 @@ func (r *runner) execute(ctx context.Context) (resultErr error) {
 		}
 		return gateErr
 	}
+	launched := false
+	defer func() {
+		if launched {
+			return
+		}
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.j.LaunchFailed = true
+		r.j.GateClosed = true
+		r.j.Quiescent = true
+		r.j.Uncertain = false
+		if resultErr != nil {
+			r.j.OperationalReason = resultErr.Error()
+			if len(r.j.OperationalReason) > 4096 {
+				r.j.OperationalReason = r.j.OperationalReason[:4096]
+			}
+		}
+		if saveErr := r.save(); saveErr != nil {
+			resultErr = errors.Join(resultErr, saveErr)
+		} else {
+			r.terminalPersisted = true
+		}
+	}()
 	r.j.ProcessStarted = true
 	e := r.save()
 	r.mu.Unlock()
@@ -64,6 +98,16 @@ func (r *runner) execute(ctx context.Context) (resultErr error) {
 	// CommandContext would silently install a second, unchecked Kill path.
 	cmd := exec.Command(r.cfg.RuntimeArgv[0], args...)
 	cmd.Dir = dir
+	cpu := a.Allocation.Resources.CPUMilli
+	if cpu == 0 {
+		cpu = 1000
+	}
+	hints, envErr := platform.NativeThreadEnvironment(cpu)
+	if envErr != nil {
+		return envErr
+	}
+	cmd.Env = append([]string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C"}, hints...)
+	cmd.Env = append(cmd.Env, r.testEnvironment...)
 	stdin, e := cmd.StdinPipe()
 	if e != nil {
 		return e
@@ -78,6 +122,7 @@ func (r *runner) execute(ctx context.Context) (resultErr error) {
 	if e = cmd.Start(); e != nil {
 		return e
 	}
+	launched = true
 	stop := make(chan struct{})
 	monitor := make(chan error, 1)
 	go func() {
@@ -129,7 +174,9 @@ func (r *runner) execute(ctx context.Context) (resultErr error) {
 		}
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		if !waited || !leafExitProven(waitErr) {
+		// ProcessState is read only after receiving this owned Cmd.Wait result.
+		// Copy/log errors can coexist with a positive OS exit observation.
+		if !waited || cmd.ProcessState == nil {
 			r.j.Uncertain = true
 			r.j.GateClosed = true
 			r.j.Quiescent = false
@@ -202,11 +249,13 @@ func (r *runner) execute(ctx context.Context) (resultErr error) {
 		if e != nil {
 			return e
 		}
-		r.mu.Lock()
-		r.j.Candidates = append(r.j.Candidates, candidate)
-		e = r.save()
-		r.mu.Unlock()
-		if e != nil {
+		if e = r.persistCandidate(candidate); e != nil {
+			return e
+		}
+		if e = r.trackWorktree(); e != nil {
+			return e
+		}
+		if e = r.checkOwnedSpool(); e != nil {
 			return e
 		}
 		if e = contracts.WriteMessage(stdin, contracts.Message{SchemaVersion: 1, Type: "published", UnitID: u.UnitID}); e != nil {
@@ -243,6 +292,19 @@ func (r *runner) execute(ctx context.Context) (resultErr error) {
 	}
 }
 
+// Only durable manifest records become visible to the independent publisher.
+func (r *runner) persistCandidate(candidate contracts.Candidate) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.j.Candidates = append(r.j.Candidates, candidate)
+	if e := r.save(); e != nil {
+		r.j.Candidates = r.j.Candidates[:len(r.j.Candidates)-1]
+		r.j.GateClosed = true
+		return e
+	}
+	return nil
+}
+
 func (r *runner) collect(ctx context.Context, output, path string, u contracts.UnitRef) (contracts.Candidate, error) {
 	var c contracts.Candidate
 	root, e := os.OpenRoot(output)
@@ -271,7 +333,7 @@ func (r *runner) collect(ctx context.Context, output, path string, u contracts.U
 		if e != nil {
 			return c, e
 		}
-		e = r.store.Publish(ctx, ref.Artifact.Digest, ref.Artifact.Size, src)
+		e = r.publishBlob(ctx, ref.Artifact.Digest, ref.Artifact.Size, src)
 		src.Close()
 		if e != nil {
 			return c, e

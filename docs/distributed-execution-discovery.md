@@ -378,6 +378,87 @@ The supporting contracts are Perry's [COMPUTE.md](../../perry/root/docs/COMPUTE.
 
 Other review clarifications placed in the current design include managed Kaggle execution rather than manual exchange as the main operating path, automatic approved resource retries, first-valid acceptance without conflict pauses, one supervised coordinator and reversible packaged agent installation. These are current contracts in the design; the review chronology is not maintained in the README. Dagu reuse was clarified as optional component-level evidence, not a required platform-selection milestone.
 
+## 14. Public Kaggle software/API investigation — November 23
+
+Read-only software-source evidence for the future S7 adapter, not an account probe, provider trial,
+capacity entitlement or deployment qualification. No credentials, datasets, notebook payloads or
+Perry files were accessed. The investigation inspected the official CLI at
+[`ad776d4`](https://github.com/Kaggle/kaggle-cli/tree/ad776d4dddb30467523e64d245c795e4c7fbe394)
+and SDK at [`6b2aeef`](https://github.com/Kaggle/kaggle-sdk-python/tree/6b2aeef1709a65d633f2bccc8e5584c9bee49669).
+These are source observations; unproved service guarantees remain unproved.
+
+- The inspected SDK uses JSON POST RPCs under
+  `https://api.kaggle.com/v1/kernels.KernelsApiService/` for `SaveKernel`, `GetKernel`,
+  `GetKernelSessionStatus`, `ListKernelFiles`, `ListKernelSessionOutput` and `ListKernels`.
+  Legacy endpoint strings in generated types are not the current transport implementation.
+- `SaveKernel` has no native request-id/idempotency/create-if-absent field. Repeating a push can
+  create another version/run. Use one unique planned slug per session, persist intent before
+  dispatch, and reconcile metadata/source/session token/input identities to an exact version.
+  A lookup miss/404 has no documented consistency guarantee and does not authorize resubmission.
+- Save responses can omit `versionNumber`; the CLI may still print success. It also warns rather
+  than fails for invalid/dropped source arrays. Exit zero therefore proves neither exact execution
+  identity nor that every required input was attached. Retain ambiguity after possible dispatch.
+- Version-pinned CLI reads use `owner/slug/N`; the inspected code sends version label `vN`.
+  Tracking and collection must retain exact owner, slug, kernel ID and version, not latest-slug state.
+- Explicitly set private notebook, CPU-only accelerator flags and internet policy. In this snapshot
+  the CLI's internet default conflicts with metadata documentation; do not rely on defaults.
+  Notebook privacy does not make its inputs private.
+- Raw status enums include queued, running, complete, error, cancel-requested, cancel-acknowledged
+  and new-script. Source declarations do not establish full-tree termination or output-finalization
+  guarantees. Cancel-requested is not terminal evidence; no live cancellation capability is adopted
+  merely because an endpoint exists.
+- Output listings are paginated names/sizes or signed URLs, not provider SHA256 identities. The CLI
+  saves files sequentially; a later HTTP429 can raise after earlier files were retained. Keep each
+  independently verified file, refresh listing/URLs and retry missing members. Neither an exception
+  nor an empty listing means no usable results/final inventory. Live incremental availability before
+  completion was not established by the inspected sources.
+- Notebook documentation describes saved `/kaggle/working` output, clean Save-and-Run sessions,
+  reuse of saved outputs as later inputs, and a CPU session ceiling. These are not guaranteed account
+  capacity or replacement availability. Exact source-version attachment semantics and output survival
+  after failures/timeouts remain qualification questions; use immutable authorized source identities
+  and Hermes manifests, not vanished container-local caches.
+
+The smallest useful fake-provider boundary is submit (exact/rejected/ambiguous), planned-slug lookup
+(absent/unknown/exact match/conflict), exact-version raw status plus qualified terminal evidence,
+paginated output listing and individual streamed download. Hermes owns reservations, original
+bounds and partial verified retention; this is not a second scheduler. Before real provider release,
+qualify ambiguous-submit visibility/matching, termination versus output finalization, and exact
+private saved-input binding. Current [design §12](design.md#12-finiteoffline-batches) remains the
+operating contract; this dated evidence does not authorize cloud execution.
+
+Software references:
+
+- [CLI push and input/default handling](https://github.com/Kaggle/kaggle-cli/blob/ad776d4dddb30467523e64d245c795e4c7fbe394/src/kaggle/api/kaggle_api_extended.py#L7289-L7488)
+- [CLI output retention/download path](https://github.com/Kaggle/kaggle-cli/blob/ad776d4dddb30467523e64d245c795e4c7fbe394/src/kaggle/api/kaggle_api_extended.py#L7635-L7753)
+- [CLI exact-version conversion](https://github.com/Kaggle/kaggle-cli/blob/ad776d4dddb30467523e64d245c795e4c7fbe394/src/kaggle/api/kaggle_api_extended.py#L10021-L10055)
+- [SDK transport service](https://github.com/Kaggle/kaggle-sdk-python/blob/6b2aeef1709a65d633f2bccc8e5584c9bee49669/kagglesdk/kernels/services/kernels_api_service.py)
+- [SDK typed request/response records](https://github.com/Kaggle/kaggle-sdk-python/blob/6b2aeef1709a65d633f2bccc8e5584c9bee49669/kagglesdk/kernels/types/kernels_api_service.py)
+- [SDK status enums](https://github.com/Kaggle/kaggle-sdk-python/blob/6b2aeef1709a65d633f2bccc8e5584c9bee49669/kagglesdk/kernels/types/kernels_enums.py)
+- [Notebook metadata](https://github.com/Kaggle/kaggle-cli/blob/ad776d4dddb30467523e64d245c795e4c7fbe394/docs/kernels_metadata.md) and [notebook documentation](https://www.kaggle.com/docs/notebooks)
+
+## 15. Operator-referenced grouped Kaggle adapter — November 24
+
+The operator reported a rebuilt Perry adapter running five notebook sessions with four package
+workers per notebook, and supplied session `01a20dd0-5bca-736b-9b72-c00ceba86c0e` for engineering
+context. This follow-up used that stored transcript only: no Perry repository inspection, agent
+contact, study-data access or provider operation. These are reported/recorded observations, not an
+independent qualification of the current Perry deployment or Hermes.
+
+- Session concurrency and package-process concurrency are separate ceilings, not occupancy targets.
+  The transcript describes finite, non-refilled notebooks, partial batches, and install/build once
+  per notebook. It reports a synthetic five-by-four overlap demonstration, not permanent entitlement.
+- Reported normal sampled guards were 6 GiB per whole-package process tree and 26 GiB per notebook
+  including overhead, with one numerical-library thread per worker. They are neither hard-memory
+  certification nor Hermes policy defaults. A sufficient oversized retry exclusively occupies its
+  notebook, not the whole fleet.
+- A startup-wide inherited-session completion barrier was identified; its removal was reported as
+  proposed rather than shipped. Retaining uncertain owners must not create an unrelated global
+  completion dependency when independently approved capacity remains.
+- Upload/acknowledgment/collection failure lessons belong in
+  [the Perry compute lessons](wp05d-distributed-compute-lessons.md#november-24-adapter-follow-up).
+  This transcript does not establish precise cold-host inventory-before-execution ordering, resolve
+  the pending Hermes offline-admission decision, or qualify Linux/container enforcement.
+
 ## Sources
 
 These Dask links are retained references from the dated investigation, not newly fetched or reverified during relocation.

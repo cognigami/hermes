@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"hermes/internal/artifacts"
 	"hermes/internal/contracts"
 	"os"
@@ -21,37 +20,51 @@ import (
 
 type Config struct {
 	Root, WorkerID, SessionID, Runtime, Profile string
+	HostID                                      string
+	SyntheticBackend                            bool
+	SyntheticMemoryBytes                        int64
+	SyntheticPhase                              string
 	RuntimeArgv                                 []string
 	Client                                      *Client
 	MaxArtifactBytes                            int64
 	ShutdownGrace                               time.Duration
+	MaxConcurrent                               int
 }
 type journal struct {
-	Work              contracts.Work              `json:"work"`
-	ProcessStarted    bool                        `json:"process_started"`
-	Started           []string                    `json:"started"`
-	Candidates        []contracts.Candidate       `json:"candidates"`
-	Delivered         int                         `json:"delivered"`
-	Quiescent         bool                        `json:"quiescent"`
-	FinalSent         bool                        `json:"final_sent"`
-	Control           contracts.AssignmentControl `json:"control"`
-	ReceiptWall       time.Time                   `json:"receipt_wall"`
-	Uncertain         bool                        `json:"uncertain"`
-	GateClosed        bool                        `json:"gate_closed"`
-	ReconcileRevision int64                       `json:"reconcile_revision"`
-	OperationalReason string                      `json:"operational_reason,omitempty"`
+	Work                     contracts.Work              `json:"work"`
+	ProcessStarted           bool                        `json:"process_started"`
+	Started                  []string                    `json:"started"`
+	Candidates               []contracts.Candidate       `json:"candidates"`
+	Delivered                int                         `json:"delivered"`
+	ReceiptAcknowledged      bool                        `json:"receipt_acknowledged"`
+	Quiescent                bool                        `json:"quiescent"`
+	FinalSent                bool                        `json:"final_sent"`
+	Control                  contracts.AssignmentControl `json:"control"`
+	ReceiptWall              time.Time                   `json:"receipt_wall"`
+	Uncertain                bool                        `json:"uncertain"`
+	GateClosed               bool                        `json:"gate_closed"`
+	ReconcileRevision        int64                       `json:"reconcile_revision"`
+	OperationalReason        string                      `json:"operational_reason,omitempty"`
+	AllocationAdmitted       bool                        `json:"allocation_admitted"`
+	ResourceStop             *contracts.ResourceStop     `json:"resource_stop,omitempty"`
+	LaunchFailed             bool                        `json:"launch_failed,omitempty"`
+	ResourceStopAcknowledged bool                        `json:"resource_stop_acknowledged"`
 }
 type runner struct {
 	cfg               Config
 	mu                sync.Mutex
 	j                 journal
 	store             *artifacts.Store
+	spool             *spool
+	admission         *admission
 	received          time.Time
 	lastWall          time.Time
 	terminalPersisted bool
 	controlDurable    int64
 	// Tests may replace signals on this owned live child; never a numeric PID lookup.
 	testSignal func(*os.Process, os.Signal) error
+	// Synthetic helper selectors supplied explicitly by tests, never inherited.
+	testEnvironment []string
 }
 
 func ID() string {
@@ -92,135 +105,20 @@ func durable(path string, value any) error {
 	defer d.Close()
 	return d.Sync()
 }
-func (r *runner) save() error { return durable(filepath.Join(r.cfg.Root, "journal.json"), r.j) }
-func Run(ctx context.Context, cfg Config) error {
-	if cfg.Root == "" || cfg.Client == nil || cfg.WorkerID == "" || cfg.SessionID == "" || cfg.Runtime == "" || cfg.Profile == "" || len(cfg.RuntimeArgv) == 0 || cfg.MaxArtifactBytes <= 0 {
-		return errors.New("incomplete agent config")
-	}
-	if !filepath.IsAbs(cfg.RuntimeArgv[0]) {
-		return errors.New("runtime executable must be absolute")
-	}
-	absolute, e := filepath.Abs(cfg.Root)
-	if e != nil {
+func (r *runner) save() error {
+	path := filepath.Join(r.cfg.Root, "journal.json")
+	if e := durable(path, r.j); e != nil {
 		return e
 	}
-	cfg.Root = absolute
-	if e := os.MkdirAll(cfg.Root, 0700); e != nil {
-		return e
-	}
-	lock, e := os.OpenFile(filepath.Join(cfg.Root, "agent.lock"), os.O_CREATE|os.O_RDWR, 0600)
-	if e != nil {
-		return e
-	}
-	defer lock.Close()
-	if e = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); e != nil {
-		return e
-	}
-	identity := struct{ Worker, Session string }{cfg.WorkerID, cfg.SessionID}
-	path := filepath.Join(cfg.Root, "identity.json")
-	if b, e := os.ReadFile(path); e == nil {
-		var prior struct{ Worker, Session string }
-		if e = json.Unmarshal(b, &prior); e != nil {
-			return e
-		}
-		if prior != identity {
-			return errors.New("persisted worker/session identity mismatch")
-		}
-	} else if !errors.Is(e, os.ErrNotExist) {
-		return e
-	} else if e = durable(path, identity); e != nil {
-		return e
-	}
-	store, e := artifacts.New(filepath.Join(cfg.Root, "blobs"), cfg.MaxArtifactBytes)
-	if e != nil {
-		return e
-	}
-	if cfg.ShutdownGrace == 0 {
-		cfg.ShutdownGrace = 100 * time.Millisecond
-	}
-	if cfg.ShutdownGrace < 0 {
-		return errors.New("invalid shutdown grace")
-	}
-	r := &runner{cfg: cfg, store: store, received: time.Now()}
-	if b, e := os.ReadFile(filepath.Join(cfg.Root, "journal.json")); e == nil {
-		if e = json.Unmarshal(b, &r.j); e != nil {
-			return e
-		}
-		if e = validateWork(r.j.Work); e != nil {
-			return e
-		}
-		a := r.j.Work.Assignment
-		if a == nil {
-			return errors.New("retained journal has no assignment")
-		}
-		if !r.j.FinalSent && (a.WorkerID != cfg.WorkerID || a.SessionID != cfg.SessionID || a.Runtime != cfg.Runtime || a.Profile != cfg.Profile) {
-			return errors.New("retained assignment incompatible with configured worker")
-		}
-		if (r.j.Uncertain || r.j.ProcessStarted || len(r.j.Started) > 0) && !r.j.Quiescent {
-			r.j.Uncertain = true
-			if e = r.save(); e != nil {
-				return e
+	if r.spool != nil {
+		if e := r.spool.TrackFile(r.j.Work.Assignment.AssignmentID, path); e != nil {
+			if r.admission != nil {
+				r.admission.block(e)
 			}
-			if e = r.reportReconciliation(ctx); e != nil {
-				return e
-			}
-			if e = r.deliver(ctx); e != nil {
-				return e
-			}
-			return errors.New("started unfinished assignment: ownership uncertain; no process adoption or new starts")
-		}
-		if !r.j.FinalSent {
-			if e = r.reportReconciliation(ctx); e != nil {
-				return e
-			}
-		}
-	} else if !errors.Is(e, os.ErrNotExist) {
-		return e
-	}
-	for {
-		if e = ctx.Err(); e != nil {
-			return e
-		}
-		if r.j.Work.Assignment != nil && !r.j.FinalSent {
-			if e = r.assignment(ctx); e != nil {
-				return e
-			}
-		}
-		request := contracts.PollRequest{SchemaVersion: 1, RequestID: ID(), WorkerID: cfg.WorkerID, SessionID: cfg.SessionID}
-		var work contracts.Work
-		for {
-			e = cfg.Client.Do(ctx, "POST", "/v1/poll", request, &work)
-			if e == nil {
-				break
-			}
-			if e = retry(ctx, e); e != nil {
-				return e
-			}
-		}
-		if e = validateWork(work); e != nil {
-			return e
-		}
-		if work.Assignment == nil {
-			if e = wait(ctx); e != nil {
-				return e
-			}
-			continue
-		}
-		a := work.Assignment
-		if a.WorkerID != cfg.WorkerID || a.SessionID != cfg.SessionID || a.Runtime != cfg.Runtime || a.Profile != cfg.Profile {
-			return errors.New("incompatible assignment")
-		}
-		if r.j.Work.Assignment != nil && r.j.Work.Assignment.AssignmentID == a.AssignmentID {
-			return errors.New("controller reissued terminal assignment")
-		}
-		r.received = time.Now()
-		r.controlDurable = 0
-		r.lastWall = time.Time{}
-		r.j = journal{Work: work, ReceiptWall: r.received.UTC()}
-		if e = r.save(); e != nil {
 			return e
 		}
 	}
+	return nil
 }
 func retry(ctx context.Context, err error) error {
 	if errors.Is(err, ErrProtocol) {
@@ -272,7 +170,41 @@ func (r *runner) assignment(ctx context.Context) (resultErr error) {
 	}()
 	var executionErr error
 	if !r.j.Quiescent {
-		executionErr = r.execute(ctx)
+		var admitted bool
+		admitted, executionErr = r.waitAdmission(ctx)
+		if admitted && executionErr == nil {
+			fetchCtx, fetchCancel := context.WithDeadline(ctx, r.j.Work.Assignment.TerminateAt)
+			executionErr = r.fetchInputs(fetchCtx)
+			fetchCancel()
+			if executionErr == nil {
+				executionErr = r.execute(ctx)
+			}
+		} else {
+			r.mu.Lock()
+			r.j.Quiescent = true
+			if executionErr != nil {
+				r.j.OperationalReason = executionErr.Error()
+			}
+			saveErr := r.save()
+			r.terminalPersisted = saveErr == nil
+			r.mu.Unlock()
+			if saveErr != nil {
+				executionErr = saveErr
+			}
+		}
+	}
+	if executionErr != nil && !r.j.ProcessStarted && r.j.ResourceStop != nil {
+		r.mu.Lock()
+		r.j.Quiescent = true
+		saveErr := r.save()
+		r.terminalPersisted = saveErr == nil
+		r.mu.Unlock()
+		if saveErr != nil {
+			executionErr = saveErr
+		}
+	}
+	if r.admission != nil && r.terminalPersisted {
+		r.admission.quiescent(r.j.Work.Assignment.AssignmentID)
 	}
 	if executionErr != nil && !r.terminalPersisted {
 		r.mu.Lock()
@@ -301,8 +233,11 @@ func (r *runner) assignment(ctx context.Context) (resultErr error) {
 	if e := <-deliveryResult; e != nil {
 		return e
 	}
+	if e := r.reportResourceStop(ctx); e != nil {
+		return e
+	}
 	r.mu.Lock()
-	final := contracts.FinalReport{Receipt: r.receipt("final"), OperationalReason: r.j.OperationalReason}
+	final := contracts.FinalReport{Receipt: r.receipt("final"), OperationalReason: r.j.OperationalReason, LaunchFailed: r.j.LaunchFailed}
 	for _, c := range r.j.Candidates {
 		final.Completed = append(final.Completed, c.UnitID)
 	}
@@ -345,7 +280,7 @@ func (r *runner) assignment(ctx context.Context) (resultErr error) {
 	if e != nil {
 		return e
 	}
-	if executionErr != nil && !controlled {
+	if executionErr != nil && !controlled && r.j.ResourceStop == nil {
 		return executionErr
 	}
 	return nil
@@ -362,6 +297,15 @@ func (r *runner) deliver(ctx context.Context) error {
 			return e
 		}
 	}
+	r.mu.Lock()
+	if !r.j.ReceiptAcknowledged {
+		r.j.ReceiptAcknowledged = true
+		if err := r.save(); err != nil {
+			r.mu.Unlock()
+			return err
+		}
+	}
+	r.mu.Unlock()
 	for {
 		r.mu.Lock()
 		index := r.j.Delivered
@@ -417,11 +361,11 @@ func (r *runner) deliver(ctx context.Context) error {
 	}
 }
 
-type logBuffer struct{ bytes.Buffer }
+type logBuffer struct{ buffer bytes.Buffer }
 
 func (b *logBuffer) Write(p []byte) (int, error) {
-	if b.Len()+len(p) > contracts.MaxMessageBytes {
+	if b.buffer.Len()+len(p) > contracts.MaxMessageBytes {
 		return 0, errors.New("application log limit")
 	}
-	return b.Buffer.Write(p)
+	return b.buffer.Write(p)
 }

@@ -9,7 +9,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"hermes/internal/agent"
@@ -113,11 +112,13 @@ func setup(t *testing.T) *fixture {
 	_, _, _, otherCert, otherKey := certificate(t, dir, "worker:other", ca, signer)
 	roots := x509.NewCertPool()
 	roots.AddCert(ca)
-	cfg := Config{Root: filepath.Join(dir, "controller"), Workers: []string{"local", "other"}, Profile: "synthetic-local", Runtime: "synthetic-v1", Validator: "synthetic-v1", ValidatorArgv: []string{filepath.Join(dir, "hermes-synthetic-validator")}, MaxArtifactBytes: 1 << 20}
+	cfg := Config{ResourcePolicy: fixtureResourcePolicy([]string{"local", "other"}), MaxConcurrent: 1, Root: filepath.Join(dir, "controller"), Workers: []string{"local", "other"}, Profile: "synthetic-local", Runtime: "synthetic-v1", Validator: "synthetic-v1", ValidatorArgv: []string{filepath.Join(dir, "hermes-synthetic-validator")}, MaxArtifactBytes: 1 << 20}
 	c, e := Open(cfg)
 	if e != nil {
 		t.Fatal(e)
 	}
+	seedFixtureInventory(t, c)
+	saveFixturePolicy(t, cfg.Root, cfg.ResourcePolicy)
 	server := httptest.NewUnstartedServer(c.Handler())
 	server.TLS = &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{pair}, ClientCAs: roots, ClientAuth: tls.RequireAndVerifyClientCert}
 	server.StartTLS()
@@ -280,15 +281,8 @@ func TestConnectedAcceptance(t *testing.T) {
 	}()
 	// Both independent units must finish and spool despite receipt/publication outage.
 	await(t, func() bool {
-		b, e := os.ReadFile(filepath.Join(spool, "journal.json"))
-		if e != nil {
-			return false
-		}
-		var j struct {
-			Quiescent  bool                  `json:"quiescent"`
-			Candidates []contracts.Candidate `json:"candidates"`
-		}
-		return json.Unmarshal(b, &j) == nil && j.Quiescent && len(j.Candidates) == 2
+		j := snapshot(spool)
+		return j.Quiescent && len(j.Candidates) == 2
 	})
 	block.blocked.Store(false)
 	await(t, func() bool {
@@ -296,7 +290,7 @@ func TestConnectedAcceptance(t *testing.T) {
 		return e == nil && v.Accepted == 3 && v.Quiescent
 	})
 	for _, ref := range []contracts.Artifact{inputRef, prepRef} {
-		matches, e := filepath.Glob(filepath.Join(spool, "assignment-*", "inputs", ref.Digest))
+		matches, e := workspaceFiles(spool, "inputs", ref.Digest)
 		if e != nil || len(matches) != 1 {
 			t.Fatal("input/preparation not staged", matches, e)
 		}

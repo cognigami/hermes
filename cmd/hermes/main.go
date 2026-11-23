@@ -29,13 +29,16 @@ func run() error {
 	flag.Parse()
 	args := flag.Args()
 	if len(args) != 2 {
-		return fmt.Errorf("usage: hermes [TLS flags] artifact-put <file> | submit <manifest> | status <run> | control <json> | control-status <kind:id> | lost-spool <json>")
+		return fmt.Errorf("usage: hermes [TLS flags] artifact-put <file> | submit <manifest> | status <run> | control <json> | control-status <kind:id> | lost-spool <json> | workflow-register <json> | workflow-control <json> | workflow-status <id>")
 	}
 	client, e := agent.NewClient(*endpoint, *ca, *cert, *key)
 	if e != nil {
 		return e
 	}
 	ctx := context.Background()
+	if handled, err := runWorkflowCommand(ctx, client, args, os.Stdout); handled {
+		return err
+	}
 	switch args[0] {
 	case "artifact-put":
 		f, e := os.Open(args[1])

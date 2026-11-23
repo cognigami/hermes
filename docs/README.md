@@ -4,9 +4,10 @@ Hermes is a standalone Go execution system for application-defined computations 
 
 The first-release design covers one macOS coordinator, independently supervised agents, durable per-unit acceptance/recovery, automatic resource rescheduling and managed Kaggle staging/submission/collection. Applications submit fixed graphs and continue authorized phases automatically. Windows and GPU execution are outside the first release.
 
-**Status:** executable contracts and artifact ingress are implemented and reviewed. The connected
-local synthetic controller/agent/CLI acceptance path and leaf-only drain/recovery are implemented
-and independently reviewed; there is no qualified general process-tree, service or cloud deployment. See the task ledger for reviewed slice status.
+**Status:** connected execution, durable acceptance, leaf recovery, resource admission and local
+workflow continuation are implemented and reviewed within synthetic scope. Finite exchange/Kaggle
+execution and service/target qualification remain pending; no general process-tree or hard resource
+enforcement is claimed. See the task ledger for reviewed slice status.
 
 ## Working documents
 
@@ -16,6 +17,7 @@ and independently reviewed; there is no qualified general process-tree, service 
 | [Implementation plan](implementation-plan.md) | Ordered delivery slices, dependencies, task progress and coordinator start brief |
 | [Coordination](COORDINATION.md) | Delegation, agent placement, review and integration workflow |
 | [Local development](development.md) | Supported build/lint/test workflows, implemented executable contracts and synthetic fixtures |
+| [Native deployment](deployment.md) | Darwin package/lifecycle instructions and explicit host-qualification limitations |
 | [Project instructions](../AGENTS.md) | Durable repository rules and documentation ownership |
 
 ## Background references

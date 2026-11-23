@@ -123,6 +123,30 @@ Useful distinctions were repeatedly collapsed:
 
 These distinctions were a strength during salvage: the recovery did not fabricate `saved/session.json`, convert deadline into memory failure, or turn missing results into scientific negatives.
 
+#### November 24 adapter follow-up
+
+The operator-provided stored session `01a20dd0-5bca-736b-9b72-c00ceba86c0e` reports subsequent
+adapter repairs. This is transcript evidence only, not a new study/provider exercise or confirmation
+of the current deployed source. The grouped-session topology is recorded in
+[the discovery follow-up](distributed-execution-discovery.md#15-operator-referenced-grouped-kaggle-adapter--november-24).
+
+- Persist an external acknowledgment before validating its fields. A validation failure after the
+  side effect must retain the response needed to reconcile it. Verify exact structured identity,
+  version and privacy, not brittle equality between differently formatted reference strings.
+- Required files can already be saved when an output command later returns HTTP 429. Validate
+  local complete artifacts first, preserve good siblings and partial transfers, and collect one
+  shared notebook once before member-specific validation. Combining evidence into one output file
+  improved collection survivability; it did not establish a rate-limit cure or terminal ownership.
+- Input upload acknowledgment is not input readiness. A reported repair reused the existing owner,
+  unique private first-version dataset and original deadlines while waiting to make its first
+  notebook submission; it did not reupload inputs or invent a replacement owner.
+- Narrow automatic fresh-session retry for an exact identity-free CPU-capacity denial was reported
+  implemented and locally fault-tested, with persisted server retry timing or a 900-second cooldown.
+  Real platform refusal recovery was not demonstrated by that evidence. This is not a Hermes
+  no-creation guarantee: generic 429/timeouts or missing IDs alone remain ambiguous, and any such
+  retry requires qualified evidence that the old execution cannot exist. Unknown/live ownership
+  continues to reserve all members and its potentially occupied session slot.
+
 ### 4. Recoverable is not the same as inexpensive to recover
 
 Accepted prefixes, immutable results and attempt journals repeatedly saved real work. But resuming still had substantial serial cost, and live controllers did not support pickup of newly staged recovery evidence. Safe integration required a controlled stop/resume.

@@ -17,7 +17,23 @@ These recipes are also available directly as `just build`, `just lint [paths...]
 
 SQLite selection is **modernc.org/sqlite v1.44.3**, pinned through `deps` in `go.mod`/`go.sum` with its transitive dependencies. The driver is pure Go; the agent remains cgo-free and does not import controller storage. `internal/controller` owns the driver import, SQL and durability settings. The connected local integration tests below exercise SQLite behavior; a fixture build alone is not durability evidence. No copied Dagu source or dependency is used.
 
-Target deployment packaging and `just build-agent <goos> <goarch>` are not implemented by this foundation. Compilation alone does not qualify service supervision or process-tree containment.
+### Explicit Darwin packages
+
+The supported target recipes are now `just build-agent <goos> <goarch>` and
+`just build-controller <goos> <goarch>`. Both arguments are mandatory; currently only
+`darwin/amd64` and `darwin/arm64` are accepted. They write self-contained directories under
+`dist/agent/<goos>-<goarch>/` or `dist/controller/<goos>-<goarch>/`, containing the executable,
+install/uninstall/lifecycle scripts, plist/shared service assets, `build-info.txt` and `SHA256SUMS`.
+The build pins `CGO_ENABLED=0`, `GOAMD64=v1` and `GOARM64=v8.0`. `HERMES_VERSION` optionally sets
+the linker version (default `dev`; only letters/digits/`.`/`_`/`+`/`-`); build metadata retains the
+Go/VCS revision and dirty state rather than pretending a development build is a release.
+
+All four target recipes and generated binary checksums were exercised at the packaging checkpoint.
+Native amd64 controller/agent `--version` reported Darwin/amd64, v1, Go 1.25.5, cgo disabled,
+protocol 1 and explicit unknown/unsupported containment/enforcement capabilities. Arm64 packages
+were cross-compiled and inspected only, not executed. No Linux finite package exists yet. See
+[deployment.md](deployment.md) for lifecycle/credentials and target evidence still required;
+compilation and script presence never qualify service supervision or process-tree containment.
 
 ## Metadata and immutable identity
 
@@ -66,7 +82,7 @@ The fixture accepts only its small synthetic files (at most 1 MiB). It writes cl
 
 ## Artifact-store integration
 
-The local store in `internal/artifacts` exposes `New(root,maxSize)`, `Publish(ctx,digest,size,reader)`, `Contains(digest,size)` and `Open(digest)`. The parent directory of the store root must already exist on a trusted local filesystem. Only successful publication (verified bytes, no-replace publication and sync) permits committing metadata references. `Contains` is a metadata-only lookup, not a full rehash or proof that a concurrent publication has completed its directory sync. The controller must persist successful `Publish` outcomes before allowing new metadata references; mere path visibility is insufficient. The store has concurrency, invalid-input and ordinary reader-failure tests and a focused correctness review. Additional tests inject file/directory-sync errors and terminate a child process after file sync, after no-replace linking, and after directory sync before return; retry must preserve complete bytes and succeed without replacement. These exercise process-loss boundaries, not power loss or filesystem failure certification. The controller transaction/acknowledgment boundary is exercised separately by the connected integration tests below. See tests beside that package.
+The local store in `internal/artifacts` exposes `New(root,maxSize)`, `Publish(ctx,digest,size,reader)`, `Contains(digest,size)` and `Open(digest)`. The parent directory of the store root must already exist on a trusted local filesystem. Only successful publication (verified bytes, no-replace publication and sync) permits committing metadata references. Construct the store under its controller/agent root authority before any publisher starts: reopening then discards only reserved regular ingress scratch from the previous, stopped publisher process. Cleanup enumerates names in batches once at open, never reads/hashes canonical payloads or scans on each admission. Unexpected objects in that private temporary namespace fail closed. `Publish` returning `artifacts.ErrIngressCleanup` means private scratch could not be removed: keep its affected transfer/storage reservation until successful exclusive reopen, even if a canonical blob exists. Canonical blobs, including unreferenced ones, remain retained; this is not garbage collection or proof that application children stopped. `Contains` is a metadata-only lookup, not a full rehash or proof that a concurrent publication has completed its directory sync. The controller must persist successful `Publish` outcomes before allowing new metadata references; mere path visibility is insufficient. The store has concurrency, invalid-input and ordinary reader-failure tests and a focused correctness review. Additional tests inject file/directory-sync errors and terminate a child process after file sync, after no-replace linking, and after directory sync before return; retry must preserve complete bytes and succeed without replacement. These exercise process-loss boundaries, not power loss or filesystem failure certification. The controller transaction/acknowledgment boundary is exercised separately by the connected integration tests below. See tests beside that package.
 
 ## Connected local slice (S2)
 
@@ -147,9 +163,12 @@ controller-binary kill test establishes post-acknowledgment persistence. None is
 service/host deployment certification.
 
 Aggregate run status also reports uncertain/exhausted/data-loss/waiting-retained-validation counts.
-The current scheduler scans package metadata. Aggregate host admission/resource recovery and indexed
-ready-package scheduling remain S4; finite exchange, managed Kaggle and workflow successors remain
-later slices. There is no automatic retry of domain-rejected calculations. S3's leaf-only controls and
+Readiness uses indexed package metadata. Aggregate admission enforces approved logical reservations
+with fresh native-capacity checks; this is not a hard CPU/RAM quota or generic descendant containment.
+Finite exchange and managed Kaggle remain unavailable. Workflow continuation is an optional service
+configured by an explicit local adapter approval. Ordinary domain rejection is not
+retry authorization; resource escalation separately requires qualified same-attempt evidence,
+quiescence and retained-result reconciliation. S3's leaf-only controls and
 recovery additions are described below; correctness and engineering review gates passed within the
 explicit leaf-only scope.
 
@@ -221,3 +240,101 @@ they do not qualify multiple agents on a physical host or aggregate admission. F
 independent correctness/engineering re-reviews passed within this scope; subsequent slice gates
 remain tracked in the plan. These tests certify neither arbitrary descendants
 nor launchd/service-account behavior.
+
+## Host concurrency foundation (S4 partial)
+
+The reviewed host-manager migration uses one agent root lock, stable worker/session identity and
+shared immutable blob store for a bounded set of assignment-local runners. Each assignment retains
+its own journal, start/control gate, deadlines, process handle and delivery inventory. Two synthetic
+package processes have been exercised concurrently under that one host authority; this does not yet
+qualify aggregate resource admission, which remains in progress.
+
+`platform.ObserveResources(path)` is the shared native resource-fact source for controller and agent:
+available processor count, Darwin `hw.memsize`, and filesystem total **and separately available** bytes.
+An available-byte value of zero means a full filesystem, not permission to substitute total capacity.
+These observations can restrict but never enlarge operator-approved budgets; they prove no hard
+memory enforcement. Errors, invalid quantities and arithmetic overflow return unknown/zero capacities
+with an error, not a partial admission fallback. Non-Darwin observation currently fails unsupported;
+Linux host physical RAM must not be mistaken for effective notebook/container/cgroup limits.
+
+`platform.NativeThreadEnvironment(cpuMilli)` derives Go and common OpenMP/BLAS thread hints from
+the ceiling of a positive approved CPU allocation, without inheriting the caller's environment.
+Callers must admit the allocation against actual capacity and explicitly construct the remaining
+execution environment. These cooperative hints are not OS CPU quotas, universal library enforcement
+or descendant containment; coupled caller/native qualification remains part of the S4 gate.
+
+`active.json` holds the bounded active receipt/admission inventory and one durable pending poll.
+Assignment journals/work directories live under `active/<assignment-hash>/`; acknowledged terminal
+archives live under `completed/<assignment-hash>/`; `blobs/` is shared. A final acknowledgment is
+persisted before archival and active-index removal. Recovery loads only indexed active metadata,
+with exact-ID lookup for an interrupted archive move, not historical result payloads. Missing,
+unindexed or mismatched active records block starts. Ambiguous mixed legacy/active metadata also
+blocks inspection/recovery; migration accepts only the exact single indexed legacy receipt and an
+absent/empty target directory, never guessed lifecycle facts.
+
+Poll requests carry retained assignment identities/digests. All unresolved work must be represented
+and reconciled before another assignment can be issued; extra entries are allowed only for exact
+known terminal assignments, accommodating final-acknowledgment races. The pending request/body is
+durable before sending, and an empty read-only response reuses that ID rather than fsyncing a new
+idle request each poll. Missing old journals never become permission to recover execution rights
+from a controller response alone.
+
+Persisted journals are private metadata bounded at **16 MiB**, separately from the 1 MiB wire bound.
+Both serialization before replacement and recovery decoding enforce the same limit. Start,
+quiescence, uncertainty and final-acknowledgment facts require explicit non-null booleans. Candidate
+append and journal commit share delivery's mutex; a failed save rolls back unpublished candidate
+visibility and closes grants. The application receives no local-publication acknowledgment for a
+candidate whose durable record cannot be recovered.
+
+`hermes-agent check-quiescence --root <absolute-path>` needs no TLS or runtime arguments. It reads
+under the existing exclusive host lock and emits version-1 JSON: `quiescent`, `uncertain` or `busy`,
+with bounded reasons/assignment details and pending-delivery count. Only `quiescent` exits zero.
+It creates no files, contacts no controller and signals no process. A missing/incomplete/ambiguous
+root is uncertain, not an idle root to initialize. Proven leaf exit may coexist with unpublished
+results; those bytes and identity/recovery metadata must be preserved. The lock is released before
+return, so lifecycle callers must first disable/unregister managed starts and exclude concurrent
+manual starts. The inspector does not clear intact uncertain execution or authorize reassignment.
+
+The retained-byte/cache index in private `spool.sqlite` is separate local bookkeeping, not a second
+controller authority. Its cached totals/revision and indexed owner rows keep ordinary snapshots free
+of historical filesystem/payload scans. A one-time bootstrap uses confined regular-file metadata;
+root service/index files belong to the explicit baseline, while similarly named assignment files
+still count. Actual archive rename preserves stable keys, but simultaneous active/completed copies
+are an accounting error that blocks admission, not an excuse to merge their bytes. The host must
+track all retained worktree/debris before releasing an allocation and must not use stale totals after
+tracking errors.
+
+Blob publication reserves a durable declared-byte intent before streaming, without holding SQL or
+host/admission locks across hashing. Cache verification becomes true only after successful durable
+artifact publication and index commit; incoming bytes are still verified on publication. Failed
+ambiguous intents remain charged, and retained files remain charged after raw acknowledgment. This
+is bounded admission accounting, not a hard filesystem quota or a garbage collector.
+
+## Workflow CLI transport (S8)
+
+The CLI implements `workflow-register <json>`, `workflow-control <json>` and
+`workflow-status <workflow-id>` using its existing operator mTLS client. Registration and control
+files are bounded strict `WorkflowRegistration` / `WorkflowControl` JSON from
+`internal/contracts/workflow.go`; preserve their explicit request IDs on retry. Responses print
+versioned, identity-matched workflow status JSON. The application submits graphs, settings references
+and decision identities, never executable argv or a server approval. Adapter approval remains local
+controller configuration.
+
+Enable the optional controller service with `--workflow-adapter-config <file>`. The bounded local
+JSON requires `schema_version: 1`, `contract`, lowercase SHA256 `runtime_digest`, absolute executable
+`argv`, and positive `timeout_millis`, `max_metadata_bytes`, `max_log_bytes`. This is a trusted,
+side-effect-free leaf application; all copied bytes and invocations consume the controller's
+approved storage/helper budget. Private runtime copies remain retained and charged, including
+failed partial copies. The timeout bounds one invocation, not the logical workflow's lifetime.
+
+Controller startup always installs workflow metadata and exposes operator-only workflow routes.
+Without an approval file, existing status/control remain available but registration returns 503 and
+no continuation loop runs. With approval, the controller verifies a protected private executable
+copy and runs continuation asynchronously; insufficient capacity waits without consuming adapter
+attempts. Shutdown cancels and joins validator/continuation loops before closing controller authority.
+
+Real mTLS/CLI tests cover dispatch, replay, role guards and disabled registration. A built-controller
+process test covers optional startup, charged runtime-copy creation, joined shutdown and restart
+without approval. These are not a fresh multi-stage numerical application demonstration, service
+manager qualification or cloud execution; those remaining gates are tracked in the implementation
+plan.

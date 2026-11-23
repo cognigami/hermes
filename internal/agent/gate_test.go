@@ -20,7 +20,7 @@ import (
 func TestDrainGrantSerialization(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		root := t.TempDir()
-		r := runner{cfg: Config{Root: root}, j: journal{Work: testWork()}}
+		r := runner{cfg: Config{Root: root}, j: journal{Work: testWork(), ProcessStarted: true}}
 		control := contracts.AssignmentControl{SchemaVersion: 1, AssignmentID: r.j.Work.Assignment.AssignmentID, Revision: 1, Action: "drain", TerminateAt: r.j.Work.Assignment.TerminateAt}
 		var ack contracts.ControlAck
 		var grant bool
@@ -57,7 +57,7 @@ func TestDrainGrantSerialization(t *testing.T) {
 	}
 }
 func TestGrantStorageFailureClosesGate(t *testing.T) {
-	r := runner{cfg: Config{Root: filepath.Join(t.TempDir(), "missing")}, j: journal{Work: testWork()}}
+	r := runner{cfg: Config{Root: filepath.Join(t.TempDir(), "missing")}, j: journal{Work: testWork(), ProcessStarted: true}}
 	if allowed, e := r.grant("u"); e == nil || allowed {
 		t.Fatal("failed write permitted grant")
 	}
@@ -159,7 +159,7 @@ func TestLeafFiniteDeadlineDuringPreparationAndUnit(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			r := runner{cfg: Config{Root: root, RuntimeArgv: []string{binary, "-test.run=^TestSlowLeafHelper$", "--"}, ShutdownGrace: 30 * time.Millisecond}, j: journal{Work: w}, store: store, received: now}
+			r := runner{testEnvironment: []string{"HERMES_TEST_SLOW_LEAF=" + mode}, cfg: Config{Root: root, RuntimeArgv: []string{binary, "-test.run=^TestSlowLeafHelper$", "--"}, ShutdownGrace: 30 * time.Millisecond}, j: journal{Work: w}, store: store, received: now}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			start := time.Now()

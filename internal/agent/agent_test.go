@@ -57,6 +57,9 @@ func uncertainControllerClient() *Client {
 func TestRestartPreparationIsUncertain(t *testing.T) {
 	root := t.TempDir()
 	j := journal{Work: testWork(), ProcessStarted: true}
+	if e := durable(filepath.Join(root, "identity.json"), struct{ Worker, Session string }{"worker", "session"}); e != nil {
+		t.Fatal(e)
+	}
 	if e := durable(filepath.Join(root, "journal.json"), j); e != nil {
 		t.Fatal(e)
 	}
@@ -65,7 +68,7 @@ func TestRestartPreparationIsUncertain(t *testing.T) {
 		t.Fatal(e)
 	}
 	var loaded journal
-	b, e := os.ReadFile(filepath.Join(root, "journal.json"))
+	b, e := os.ReadFile(filepath.Join(root, "active", contracts.Hash([]byte(j.Work.Assignment.AssignmentID)), "journal.json"))
 	if e != nil {
 		t.Fatal(e)
 	}

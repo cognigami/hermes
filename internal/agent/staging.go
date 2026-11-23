@@ -5,7 +5,6 @@ import (
 	"errors"
 	"hermes/internal/contracts"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 )
@@ -57,10 +56,7 @@ func validateWork(w contracts.Work) error {
 	return nil
 }
 func (r *runner) stage(ctx context.Context, dir string) error {
-	refs := append([]contracts.Artifact{}, r.j.Work.Package.Preparation...)
-	for _, u := range r.j.Work.Units {
-		refs = append(refs, u.Inputs...)
-	}
+	refs := workInputs(r.j.Work)
 	if len(refs) == 0 {
 		return nil
 	}
@@ -74,21 +70,7 @@ func (r *runner) stage(ctx context.Context, dir string) error {
 			continue
 		}
 		seen[a.Digest] = true
-		req, e := http.NewRequestWithContext(ctx, "GET", r.cfg.Client.URL+"/v1/artifacts/"+a.Digest+"?assignment="+r.j.Work.Assignment.AssignmentID, nil)
-		if e != nil {
-			return e
-		}
-		response, e := r.cfg.Client.HTTP.Do(req)
-		if e != nil {
-			return e
-		}
-		if response.StatusCode != 200 {
-			response.Body.Close()
-			return errors.New("input staging denied")
-		}
-		e = r.store.Publish(ctx, a.Digest, a.Size, response.Body)
-		response.Body.Close()
-		if e != nil {
+		if e := ctx.Err(); e != nil {
 			return e
 		}
 		src, e := r.store.Open(a.Digest)

@@ -214,8 +214,17 @@ func TestProcessExitAtPublicationBoundaries(t *testing.T) {
 					t.Fatalf("incomplete linked bytes: %q %v", b, err)
 				}
 			}
-			// A caller that lost its response retries the same bytes; orphan ingress
-			// files may remain but no partial destination is accepted or replaced.
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".ingress-") {
+					t.Fatal("reopen retained abandoned ingress", entry.Name())
+				}
+			}
+			// A caller that lost its response retries the same bytes after scratch
+			// cleanup; no partial destination is accepted or replaced.
 			if err := s.Publish(context.Background(), digestOf("abc"), 3, strings.NewReader("abc")); err != nil {
 				t.Fatal(err)
 			}

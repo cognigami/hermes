@@ -41,6 +41,7 @@ func TestDrainDuringRealFixturePreparation(t *testing.T) {
 		q, e := f.c.ControlStatus(ctx, "worker", "local")
 		return e == nil && q.State == "complete"
 	})
+	await(t, func() bool { return snapshot(root).FinalSent })
 	j := snapshot(root)
 	if len(j.Started) != 0 || !j.Quiescent || !j.FinalSent {
 		t.Fatal("preparation drain did not hand back never-started inventory", j)

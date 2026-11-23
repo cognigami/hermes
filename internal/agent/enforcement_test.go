@@ -73,7 +73,7 @@ func TestSignalErrorsReportUncertaintyWithoutWaitingOrFallback(t *testing.T) {
 				b, _ := json.Marshal(value)
 				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(b))}, nil
 			})}}
-			r := runner{cfg: Config{Root: root, RuntimeArgv: []string{binary, "-test.run=^TestSignalLeafHelper$", "--"}, Client: client, ShutdownGrace: 50 * time.Millisecond}, j: journal{Work: work, ReceiptWall: now.UTC()}, store: store, received: now}
+			r := runner{testEnvironment: []string{"HERMES_TEST_SIGNAL_LEAF=" + marker}, cfg: Config{Root: root, RuntimeArgv: []string{binary, "-test.run=^TestSignalLeafHelper$", "--"}, Client: client, ShutdownGrace: 50 * time.Millisecond}, j: journal{Work: work, ReceiptWall: now.UTC()}, store: store, received: now}
 			var calls atomic.Int64
 			r.testSignal = func(_ *os.Process, sig os.Signal) error {
 				calls.Add(1)

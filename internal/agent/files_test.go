@@ -81,7 +81,7 @@ func TestFIFOOutputsFailWithoutBlocking(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			r := runner{cfg: Config{Root: root, RuntimeArgv: []string{binary, "-test.run=^TestFIFOApplicationHelper$", "--"}}, j: journal{Work: testWork()}, store: store}
+			r := runner{testEnvironment: []string{"HERMES_TEST_FIFO=" + mode}, cfg: Config{Root: root, RuntimeArgv: []string{binary, "-test.run=^TestFIFOApplicationHelper$", "--"}}, j: journal{Work: testWork()}, store: store}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			done := make(chan error, 1)

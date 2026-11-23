@@ -19,23 +19,50 @@ import (
 )
 
 type agentSnapshot struct {
-	ProcessStarted bool                        `json:"process_started"`
-	Work           contracts.Work              `json:"work"`
-	Started        []string                    `json:"started"`
-	Candidates     []contracts.Candidate       `json:"candidates"`
-	Quiescent      bool                        `json:"quiescent"`
-	FinalSent      bool                        `json:"final_sent"`
-	Control        contracts.AssignmentControl `json:"control"`
+	ReceiptAcknowledged bool                        `json:"receipt_acknowledged"`
+	ProcessStarted      bool                        `json:"process_started"`
+	Work                contracts.Work              `json:"work"`
+	Started             []string                    `json:"started"`
+	Candidates          []contracts.Candidate       `json:"candidates"`
+	Quiescent           bool                        `json:"quiescent"`
+	FinalSent           bool                        `json:"final_sent"`
+	Control             contracts.AssignmentControl `json:"control"`
 }
 
 func snapshot(root string) agentSnapshot {
 	var s agentSnapshot
-	b, e := os.ReadFile(filepath.Join(root, "journal.json"))
+	paths, _ := filepath.Glob(filepath.Join(root, "active", "*", "journal.json"))
+	archived, _ := filepath.Glob(filepath.Join(root, "completed", "*", "journal.json"))
+	paths = append(paths, archived...)
+	paths = append(paths, filepath.Join(root, "journal.json"))
+	var latest time.Time
+	var selected string
+	for _, path := range paths {
+		if info, e := os.Stat(path); e == nil && (selected == "" || info.ModTime().After(latest)) {
+			latest = info.ModTime()
+			selected = path
+		}
+	}
+	b, e := os.ReadFile(selected)
 	if e == nil {
 		json.Unmarshal(b, &s)
 	}
 	return s
 }
+func workspaceFiles(root string, suffix ...string) ([]string, error) {
+	var result []string
+	for _, base := range []string{"active", "completed"} {
+		parts := []string{root, base, "*", "work"}
+		parts = append(parts, suffix...)
+		paths, e := filepath.Glob(filepath.Join(parts...))
+		if e != nil {
+			return nil, e
+		}
+		result = append(result, paths...)
+	}
+	return result, nil
+}
+
 func launchAgent(t *testing.T, f *fixture, client *agent.Client, worker, root string, delay int) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())

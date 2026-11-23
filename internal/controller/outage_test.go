@@ -18,7 +18,7 @@ func controllerProcess(t *testing.T, f *fixture, url string) func() {
 	if e != nil {
 		t.Fatal(e)
 	}
-	cmd := exec.Command(filepath.Join(dir, "hermes-controller"), "--root", f.cfg.Root, "--listen", strings.TrimPrefix(url, "https://"), "--ca", f.ca, "--cert", filepath.Join(dir, "server.crt"), "--key", filepath.Join(dir, "server.key"), "--workers", "local,other", "--validator", f.cfg.ValidatorArgv[0])
+	cmd := exec.Command(filepath.Join(dir, "hermes-controller"), "--root", f.cfg.Root, "--listen", strings.TrimPrefix(url, "https://"), "--ca", f.ca, "--cert", filepath.Join(dir, "server.crt"), "--key", filepath.Join(dir, "server.key"), "--workers", "local,other", "--validator", f.cfg.ValidatorArgv[0], "--resource-policy", filepath.Join(dir, "resource-policy.json"))
 	cmd.Stdout = log
 	cmd.Stderr = log
 	if e = cmd.Start(); e != nil {
@@ -71,7 +71,7 @@ func TestControllerOutageLeavesIssuedLeafExecutionIndependent(t *testing.T) {
 		return f.operator.Do(ctx, "GET", "/v1/status?run=outage", nil, &s) == nil && s.Accepted == 3 && s.Quiescent
 	})
 	stopAgent()
-	paths, e := filepath.Glob(filepath.Join(root, "assignment-*", "output", "*.manifest.json"))
+	paths, e := workspaceFiles(root, "output", "*.manifest.json")
 	if e != nil || len(paths) != 3 {
 		t.Fatal("issued/accepted prefix replayed", paths, e)
 	}

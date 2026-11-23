@@ -68,16 +68,30 @@ Use SQLite on a supported local filesystem for small records and transactions; s
 - Acquire an OS-held exclusive controller lock for the state root before opening service authority. Hold it for the process lifetime. A second controller fails closed. All metadata writers, including CLI operations, go through that authority.
 - Use durable transactions, foreign keys and unique constraints; acknowledge metadata only after commit. Database and artifact durability settings must be tested against the declared process-crash boundary.
 - Artifact publication streams into a private temporary file **within the artifact filesystem**, verifies declared length/digest, syncs bytes, and publishes atomically without replacing existing immutable content. Sync directory metadata before acknowledging durable publication where required by the platform.
-- Commit metadata references only after referenced blobs are durably published. A crash may leave an unreferenced blob, never an acknowledged reference to incomplete bytes. Garbage collection is deferred; retain artifacts in the first release.
+- Commit metadata references only after referenced blobs are durably published. A crash may leave an unreferenced blob, never an acknowledged reference to incomplete bytes. Garbage collection is deferred; retain artifacts in the first release. Incomplete ingress scratch
+  is not a published artifact: an exclusive store owner may remove its reserved temporary files
+  after establishing the previous publisher process is gone, before new publishers start. This does
+  not establish application/validator child quiescence or authorize reassignment.
 - Acceptance is one transaction inserting the unique `(run_id, unit_id)` record and advancing dependency/readiness metadata. Persist validator identity and its decision. Do not rerun validation after acceptance during ordinary recovery.
 
 The state root is the authoritative failure domain. If it is lost, Hermes does not claim that a worker spool reconstructs the entire controller. Manual restore/move must first establish the old controller cannot act and reconcile agents; restoring an old database snapshot while workers run is not a supported automatic recovery path. Backup/restore procedures are a separate prerequisite for a deployment promising machine-loss recovery.
 
 ### Agent storage
 
-An agent persists a stable worker ID, assignment/session identities, control revisions, started units and per-unit result manifests. Worker identity is provisioned locally, not freshly minted on every reconnect. An assignment's execution-session identity survives an agent-process restart; it is not the identity of the current agent process. A restarted authenticated agent reports retained assignment IDs, start records and results for reconciliation with controller state before new execution. Restart does not itself authorize replay of previously started work. Result blobs remain in its spool until controller raw-publication acknowledgment, not merely network-send completion. Retain unacknowledged bytes across agent restart if the disk survives.
+An agent persists a stable worker ID, assignment/session identities, control revisions, started units and per-unit result manifests. Worker identity is provisioned locally, not freshly minted on every reconnect. An assignment's execution-session identity survives an agent-process restart; it is not the identity of the current agent process. A restarted authenticated agent reports retained assignment IDs, start records and results for reconciliation with controller state before new execution. Restart does not itself authorize replay of previously started work. Result blobs remain in its spool until controller raw-publication acknowledgment, not merely network-send completion. Retain unacknowledged bytes across agent restart if the disk survives. Persisted execution journals
+must carry explicit non-null lifecycle facts; absent/null start, quiescence, uncertainty or final-ack
+fields are incomplete evidence, not a default “never started.” Local inspection/recovery must reject
+ambiguous mixed legacy/active layouts and unindexed execution metadata rather than letting one known
+receipt conceal another unknown execution. Historical terminal payloads need not be scanned.
 
 Disk-full or publication failure stops new unit starts and reports an operational error. Do not compute indefinitely without a result-retention path. Worker-local persistence survives process loss, not machine/disk loss. Controller-acknowledged raw results survive worker loss; acceptance may still be pending.
+
+A host-local retained-byte/verified-cache index is resource bookkeeping, not another controller
+acceptance catalogue or scheduler. It cannot grant execution rights. Files still on disk remain
+charged after raw acknowledgment and archival; only explicit deletion under retention policy could
+refund their bytes. Stable archive keys must not conceal simultaneous duplicate physical files.
+Verified-cache status requires successful durable publication plus its durable index commit, not
+mere path visibility. Ordinary accounting/status reads metadata rather than historical payload bytes.
 
 ## 5. Data contracts
 
@@ -117,7 +131,7 @@ A valid application outcome may be “no solution” if its validator accepts th
 
 ### Fixed graphs and unattended continuation
 
-First release uses fixed scheduler submissions: assemble and seal the units, packages and dependencies before issuance; do not append new units to an executing graph. An application may submit a subsequent fixed graph based on earlier accepted results and a validated decision/freeze artifact. The logical assay/workflow identity can span several scheduler submissions. Refer to original acceptance records/artifacts and preserve calculation identities rather than recomputing or counting earlier work again.
+First release uses fixed scheduler submissions: assemble and seal the units, packages and dependencies before issuance; do not append new units to an executing graph. An application may submit a subsequent fixed graph based on earlier accepted results and a validated decision/freeze artifact. The logical assay/workflow identity can span several scheduler submissions. Refer to original acceptance records/artifacts and preserve calculation identities rather than recomputing or counting earlier work again. When all required decisions are canonical acceptances, submitting a new graph of new units does not require old execution to be quiescent; its unresolved owners and resource reservations remain honest. Terminal-driven continuation without accepted outputs requires explicit typed application/operational facts, not an empty ready queue, missing payload or parsed diagnostic reason.
 
 Routine authorized continuation must run automatically without a live Pi/LLM, manual intermediate forwarding, review timer or approval state. The application deterministically evaluates accepted outputs and explicit terminal/availability states, then submits the next graph or records its prescribed stop. Use the chosen orchestrator and existing durable settings/results plus idempotent submission requests; do not build a second scheduler or autonomous research planner. Persist the intended successor and its request ID so recovery reconciles an already-created submission rather than creating a duplicate. Respect workflow-level explicit stop/resume and any actual cumulative budget across all submissions; automatic restart does not authorize a stopped workflow to continue.
 
@@ -143,6 +157,14 @@ Reports carry assignment IDs, session IDs and monotonic report/control revisions
 Maintain indexed ready queues and unresolved assignments. Select eligible units in stable ready order, preferring an existing permitted artifact cache only among otherwise eligible choices. Enforce hard data-location/capability restrictions before locality preferences. Application-defined package sizing bounds unit count, runtime envelope and staged bytes; it must not create an unbounded grant of future work.
 
 Resource reservations include preparation, application processes, native children, transfer and validation overhead. Enforce aggregate host budgets as well as per-assignment profiles. GPU placement reserves device IDs and declared VRAM; a GPU label does not turn CPU work into GPU work. Unknown demand requires an explicit conservative/operator-approved profile, not a guessed estimate.
+Use explicit execution environments rather than inheriting service credentials. Project the approved
+CPU reservation into Go and common numerical-library thread hints (ceil of CPU milli/1000); these
+cooperative settings do not establish an OS CPU quota or universal native-thread enforcement.
+Controller-owned validators and continuation adapters also consume approved host resources. A
+controller crash or released metadata-root lock does not prove those child processes have exited;
+persisted started claims remain reserved/uncertain until observed exit or a qualified terminal boundary
+establishes otherwise. Dead controller-local timers are not orphan termination proof. Expose resulting
+capacity waits honestly rather than silently starting replacements outside the aggregate budget.
 
 Policy updates affect unassigned work immediately. Already issued assignments retain their policy/profile, including not-yet-started units in that assignment; changing them requires acknowledged drain/handback and reissue. Smaller finite assignments improve policy responsiveness. This explicit boundary avoids mutating a running solver or silently revoking work it may start while disconnected.
 

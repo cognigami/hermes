@@ -226,19 +226,20 @@ func (p Package) Validate() error {
 }
 
 type Assignment struct {
-	SchemaVersion   int       `json:"schema_version"`
-	AssignmentID    string    `json:"assignment_id"`
-	RunID           string    `json:"run_id"`
-	WorkerID        string    `json:"worker_id"`
-	SessionID       string    `json:"session_id"`
-	PackageDigest   string    `json:"package_digest"`
-	Units           []UnitRef `json:"units"`
-	Runtime         string    `json:"runtime"`
-	Profile         string    `json:"profile"`
-	PolicyRevision  int64     `json:"policy_revision"`
-	StopNewUnitsAt  time.Time `json:"stop_new_units_at"`
-	TerminateAt     time.Time `json:"terminate_at"`
-	HandoffDeadline time.Time `json:"handoff_deadline"`
+	SchemaVersion   int        `json:"schema_version"`
+	AssignmentID    string     `json:"assignment_id"`
+	RunID           string     `json:"run_id"`
+	WorkerID        string     `json:"worker_id"`
+	SessionID       string     `json:"session_id"`
+	PackageDigest   string     `json:"package_digest"`
+	Units           []UnitRef  `json:"units"`
+	Runtime         string     `json:"runtime"`
+	Profile         string     `json:"profile"`
+	Allocation      Allocation `json:"allocation"`
+	PolicyRevision  int64      `json:"policy_revision"`
+	StopNewUnitsAt  time.Time  `json:"stop_new_units_at"`
+	TerminateAt     time.Time  `json:"terminate_at"`
+	HandoffDeadline time.Time  `json:"handoff_deadline"`
 }
 
 func (a Assignment) Validate() error {

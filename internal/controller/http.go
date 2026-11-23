@@ -2,18 +2,34 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"hermes/internal/contracts"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func (c *Controller) Handler() http.Handler { return http.HandlerFunc(c.serve) }
+
+// HandlerWithWorkflows enables workflow metadata routes after InstallWorkflows.
+// Approval is controller-local configuration; nil disables registration/execution,
+// but existing workflow status and control remain available.
+func (c *Controller) HandlerWithWorkflows(approval *WorkflowAdapterConfig) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c.serveHTTP(w, r, true, approval)
+	})
+}
+
 func (c *Controller) serve(w http.ResponseWriter, r *http.Request) {
+	c.serveHTTP(w, r, false, nil)
+}
+func (c *Controller) serveHTTP(w http.ResponseWriter, r *http.Request, workflows bool, approval *WorkflowAdapterConfig) {
 	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.PeerCertificates) == 0 {
 		http.Error(w, "client certificate required", 401)
 		return
@@ -24,6 +40,9 @@ func (c *Controller) serve(w http.ResponseWriter, r *http.Request) {
 	worker := strings.HasPrefix(principal, "worker:") && c.allowedWorker(workerID)
 	if !operator && !worker {
 		http.Error(w, "unknown principal", 403)
+		return
+	}
+	if workflows && c.serveWorkflowHTTP(w, r, principal, approval) {
 		return
 	}
 	fail := func(e error) { http.Error(w, e.Error(), 400) }
@@ -47,12 +66,18 @@ func (c *Controller) serve(w http.ResponseWriter, r *http.Request) {
 				fail(e)
 				return
 			}
-			if e = c.store.Publish(r.Context(), digest, size, r.Body); e != nil {
-				fail(e)
-				return
+			assignment := ""
+			if worker {
+				assignment = r.URL.Query().Get("assignment")
 			}
-			if _, e = c.db.ExecContext(r.Context(), "INSERT OR IGNORE INTO artifacts VALUES(?,?)", digest, size); e != nil {
-				http.Error(w, e.Error(), 500)
+			if e = c.PublishArtifact(r.Context(), digest, size, assignment, r.Body); e != nil {
+				status := http.StatusInternalServerError
+				if errors.Is(e, ErrControllerCapacity) {
+					status = http.StatusServiceUnavailable
+				} else if errors.Is(e, ErrInvalidArtifact) {
+					status = http.StatusBadRequest
+				}
+				http.Error(w, e.Error(), status)
 				return
 			}
 			json.NewEncoder(w).Encode(contracts.Acknowledgment{SchemaVersion: 1, Published: true})
@@ -95,6 +120,26 @@ func (c *Controller) serve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if r.Method == "GET" && (operator || worker) {
+			assignment := ""
+			if worker {
+				assignment = r.URL.Query().Get("assignment")
+			}
+			transferCtx, release, e := c.BeginArtifactTransfer(r.Context(), assignment)
+			if e != nil {
+				status := http.StatusInternalServerError
+				if errors.Is(e, ErrControllerCapacity) {
+					status = http.StatusServiceUnavailable
+				}
+				http.Error(w, e.Error(), status)
+				return
+			}
+			defer release()
+			stopIO := context.AfterFunc(transferCtx, func() {
+				if e := http.NewResponseController(w).SetWriteDeadline(time.Now()); e != nil && !errors.Is(e, http.ErrNotSupported) {
+					log.Printf("cancel artifact response: %v", e)
+				}
+			})
+			defer stopIO()
 			f, e := c.store.Open(digest)
 			if e != nil {
 				fail(e)
@@ -106,10 +151,19 @@ func (c *Controller) serve(w http.ResponseWriter, r *http.Request) {
 				fail(e)
 				return
 			}
-			http.ServeContent(w, r, digest, info.ModTime(), f)
+			http.ServeContent(w, r.WithContext(transferCtx), digest, info.ModTime(), f)
 			return
 		}
 		http.Error(w, "forbidden", 403)
+		return
+	}
+	if r.Method == "GET" && r.URL.Path == "/v1/resources" && operator {
+		status, e := c.ResourceStatus(r.Context(), r.URL.Query().Get("host"))
+		if e != nil {
+			fail(e)
+			return
+		}
+		json.NewEncoder(w).Encode(status)
 		return
 	}
 	if r.Method == "GET" && r.URL.Path == "/v1/status" && operator {
@@ -168,6 +222,33 @@ func (c *Controller) serve(w http.ResponseWriter, r *http.Request) {
 		var s contracts.Submission
 		if e = contracts.Decode(r.Body, &s); e == nil {
 			result, e = c.mutate(r.Context(), principal, s.RequestID, s, func(tx *sql.Tx) (any, error) { return c.submit(tx, s) })
+		}
+	case "/v1/resource-policy":
+		if !operator {
+			http.Error(w, "operator required", 403)
+			return
+		}
+		var policy contracts.PolicyRequest
+		if e = contracts.Decode(r.Body, &policy); e == nil {
+			result, e = c.mutate(r.Context(), principal, policy.RequestID, policy, func(tx *sql.Tx) (any, error) { return c.updateResourcePolicy(tx, policy) })
+		}
+	case "/v1/resource-stop":
+		if !worker {
+			http.Error(w, "worker required", 403)
+			return
+		}
+		var stop contracts.ResourceStop
+		if e = contracts.Decode(r.Body, &stop); e == nil {
+			result, e = c.mutate(r.Context(), principal, stop.RequestID, stop, func(tx *sql.Tx) (any, error) { return c.resourceStop(tx, stop) })
+		}
+	case "/v1/register":
+		if !worker {
+			http.Error(w, "worker required", 403)
+			return
+		}
+		var registration contracts.WorkerRegistration
+		if e = contracts.Decode(r.Body, &registration); e == nil {
+			result, e = c.mutate(r.Context(), principal, registration.RequestID, registration, func(tx *sql.Tx) (any, error) { return c.registerHost(tx, registration) })
 		}
 	case "/v1/poll":
 		if !worker {
