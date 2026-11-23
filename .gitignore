@@ -29,6 +29,9 @@ go.work.sum
 # env file
 .env
 
+# Local feasibility trials (binaries, fixtures, logs and runtime state)
+/.local-trials/
+
 # Editor/IDE
 # .idea/
 # .vscode/

@@ -299,6 +299,47 @@ The desired result is **Dagu plus instructions for a study designer/planner**, w
 
 If those pass with small application adapters, omit the custom Hermes coordinator, agent, control database and session protocol. If adoption requires recreating them to satisfy a specific retained requirement, identify that requirement before choosing a wrapper or returning to a custom build. No installation, dependency change, deployment, live-job control or scientific inspection was performed for this assessment.
 
+## 11. First native Dagu trial — November 23
+
+**Executed, bounded synthetic observations; not WP05D admission.** The operator authorized a small trial and explicitly directed its files to an ignored in-project location after an attempted outside-project cache write was denied. `/.local-trials/` was added to `.gitignore` before any fixtures/binaries were created. Trial scripts, executable, application results, logs and runtime state remain under `.local-trials/dagu-v2.27.0/`, outside source control. No installed services, Perry jobs/data, remote-host deployment or Kaggle submission were used.
+
+### Release and setup
+
+- Released **v2.27.0**, native Darwin/amd64, rather than the source-review checkout `v2.27.0-178-g5bf6cd741`. The GitHub release archive SHA256 matched `c34102b3d6e9225560e771e0e94ca5a172e76ff270ec7a472bd9260af0bc7b52`, and the extracted executable reported `2.27.0`.
+- Archive: **65,530,594 bytes**; executable: **203,086,608 bytes**. These are Mac artifact sizes, not measurements of the Linux/Kaggle build or evidence that any Kaggle transport channel admits them.
+- Coordinator/UI bound to loopback ports 50065/18080, with separate local worker homes, explicit peer token and at most two simultaneous workers, each admitting one run. No VM, container, database or broker installation. HTTP auth was explicitly disabled only in the isolated loopback trial; the initial default-builtin-auth startup correctly returned HTTP401 and its harness stopped/cleaned up before adjustment.
+- Synthetic foreground Python commands used a shared **1 MiB input** and second-scale sleeps. Each application unit wrote a validated one-file candidate and atomically linked the first accepted reference, then skipped computation when that accepted reference already existed. This was trial application logic, not a built-in Dagu acceptance/cache guarantee. Application runtimes are additional to the Dagu executable.
+
+### Observed behavior
+
+| Check | Result / limitation |
+|---|---|
+| Native coordinator and distributed worker mode | Worked locally: distinct worker IDs `trial-w1`/`trial-w2`, both reporting darwin/amd64 and v2.27.0. Two independent root runs were concurrently running on different workers. This is one physical Mac, not a multi-host LAN test. |
+| Brief coordinator crash/restart | SIGKILL of the coordinator followed by restart after about one second preserved the original two application PIDs and single starts. Both Dagu runs reached succeeded. This does not establish survival of an arbitrary outage. |
+| Published-result reuse across fresh run identity | A new Dagu run for the already accepted application unit emitted `reused` without another input read. This demonstrates the adapter boundary; it does not measure 144-file/25.75 GiB recovery or instrument Dagu's filesystem reads. |
+| Worker removal/addition | An idle worker stopped and a differently identified worker registered while the coordinator stayed up. Later units ran. Active drain/policy replacement on real remote machines remains untested. |
+| Resource failure and bigger lane | A synthetic command exited with classified code42. An **explicit harness resubmission** of that application unit through a separate `big` queue completed. No actual memory exhaustion, automatic escalation classifier, larger physical allocation or native enforcement was tested. |
+| Same-host exclusivity | **Not supplied by separate queues:** a normal-queue run and big-queue run overlapped on the same Mac despite respective queue limits. This reproduces the admission gap, not a successful exclusive-memory retry policy. |
+| Aggregation | The application harness assembled the exact four expected accepted unit IDs after their completion. A Dagu-scheduled reducer, missing/invalid-result barrier and actual WP05D stage graph were not exercised. |
+| Worker SIGKILL | In two observations the tracked foreground application PID was absent two seconds after killing its worker; no accepted result or graceful termination event was published. Coordinator metadata could still show running immediately afterward. Released-source review identifies a Unix parent-exit watchdog as a mechanism consistent with this observation; it does not establish protection of descendants that escape the original process group. |
+| Longer coordinator outage | During a **105.39 s outage**, the worker logged owner-unreachable cancellation at about90 s. The tracked application PID was absent by105 s, no result had been accepted, and the restarted coordinator marked the run failed with `distributed run lease expired`. This confirms finite owner-connectivity behavior in this release, not independent offline execution. Automatic replacement was not configured/tested. |
+
+### Failure and cleanup limits
+
+The first failure harness incorrectly waited for a graceful completion/termination event after hard worker death and timed out. A corrected harness observed the missing child but then timed out starting another normal-queue run while failed-worker runs still held running metadata/queue slots. These are retained unsuccessful observations, not silently counted as passes or a throughput benchmark. A fresh isolated controller state was used for the long-outage check.
+
+**Permission-sensitive cleanup remains unresolved; no further runtime attempts planned:** the long-outage log reported `Failed to stop step: operation not permitted`, followed by aborted worker state; the tracked application PID was nevertheless absent at the later observation. Read-only **v2.27.0** source review traced `Node.Stop → commandExecutor.Stop → ManagedProcess.Stop → syscall.Kill(-pid, signal)`. There is no synthetic own-process-group rejection on that path: this is an actual OS/security-layer signal denial, not an intentional Dagu safety guard. Source does not identify whether the cause is the sandbox or another OS policy. `Node.Stop` marks aborted before signaling, so terminal metadata does not prove the signal succeeded. Do not change permissions or try alternative signal mechanisms to make the test pass without operator guidance.
+
+The worker did not exit within the harness's12 s cleanup wait (with5 s worker drain configured), and normal harness cleanup forcibly stopped its directly owned process group. Reporting/cleanup waits also exist; this timing alone does not identify the cause. All directly launched coordinator/worker processes were reaped. No alternative signaling workaround for the denied Dagu operation was attempted, and arbitrary orphan-tree cleanup remains uncertified.
+
+**Released Unix parent-exit containment:** `internal/cmn/cmdutil/parent_exit_watcher_unix.go` starts a separate shell watchdog with a pipe. Parent death closes the pipe; absent the normal release token, the watchdog sends SIGKILL to the managed command's process group. This explains why worker death need not leave the foreground command running and is consistent with the observed missing PIDs/no cleanup events. It corrects the earlier assumption that no cleanup can act after worker SIGKILL. However, the watchdog suppresses signal errors and cannot cover descendants that leave the group; neither source nor this small trial establishes universal containment. Sources were inspected through the operator-provided Dagu agent, without modifying its checkout.
+
+The main concurrency/reuse trial completed in **50.71 s**; the long-outage observation in **124.70 s**, including cleanup. Those are harness elapsed times, not scheduler performance claims. Trial artifacts include `report.json`, the unsuccessful `failure-report*.json`, `lease-report.json`, per-process logs, YAML and application events, all ignored. Source-controlled findings are this section; the fixtures are not a reusable Hermes implementation.
+
+### Consequence for the adoption decision
+
+Native Mac dispatch, short-restart continuity, small referenced units and application-owned result reuse are credible. **Instructions/YAML alone have not yet demonstrated the parallel-to-exclusive retry policy**, and long disconnection is not the connected worker mode's contract. The largest remaining questions are shared-host admission, application publication/aggregation interfaces, permission-sensitive cleanup, and a faithful mapping of WP05D's preparation/stage graph. Kaggle command glue and packaging limits remain documentary/unexercised. No decision to build a wrapper or adopt Dagu follows from this first trial.
+
 ## Sources
 
 These Dask links are retained references from the dated investigation, not newly fetched or reverified during relocation.
