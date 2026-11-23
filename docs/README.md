@@ -60,6 +60,7 @@ The design owns the details rather than duplicating them here:
 
 - [Scope and invariants](design.md#2-scope-guarantees-and-limits).
 - [Durable storage and authority](design.md#4-durable-storage-and-authority).
+- [Literal Dagu source-extraction assessment](distributed-execution-discovery.md#12-literal-source-extraction-from-dagu-v2270): narrow publication/lifecycle candidates for independent maintenance, not library adoption; no code copied or license decision made.
 - [Agent host inventory and cross-compilation recipe](design.md#agent-host-and-build-contract).
 - [Crash and reconciliation](design.md#10-crash-disconnect-and-reconciliation).
 - [Drain and deadlines](design.md#11-drain-deadlines-and-interruption).
