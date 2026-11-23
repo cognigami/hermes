@@ -2,7 +2,7 @@
 
 Retrospective, November 21, 2026. Discussion input, **not an implementation plan, new operating policy, readiness certificate or execution release**. Current Perry procedures remain in [COMPUTE](../../perry/root/docs/COMPUTE.md), the [Kaggle operating procedure](../../perry/root/docs/kaggle-operating-procedure.md) and the Perry charter. Run-specific state remains in [readiness](../../perry/root/docs/research/wp05d-run-readiness.md).
 
-**Relocation note:** This historical retrospective now lives in Hermes. See the [Hermes handoff](README.md) for subsequent decisions. All links into `../../perry/root/docs/` are optional historical evidence requiring a sibling Perry checkout; they are not Hermes procedures or prerequisites for understanding its discovery. Inline source paths such as `scratch/` refer to paths inside Perry, not Hermes.
+**Relocation note:** This historical retrospective now lives in Hermes. See the [Hermes documentation index](README.md) for the current design and implementation plan. All links into `../../perry/root/docs/` are optional historical evidence requiring a sibling Perry checkout; they are not Hermes procedures or prerequisites for understanding its discovery. Inline source paths such as `scratch/` refer to paths inside Perry, not Hermes.
 
 ## Scope and evidence
 
@@ -204,7 +204,7 @@ These assets argue against a reflexive rewrite. Their presence also must not be 
 
 ## Questions for next steps — not investigation authorization
 
-Follow-up discovery: [standalone execution baseline and Dask assessment](distributed-execution-discovery.md) captures the operator's subsequent requirements. It now lives in the separate Hermes repository and remains documentation-only; the [handoff](README.md) records later direction favoring narrow custom infrastructure.
+Follow-up discovery: [standalone execution baseline and Dask assessment](distributed-execution-discovery.md) captures the operator's subsequent requirements. It now lives in the separate Hermes repository and remains documentation-only; the [documentation index](README.md) links to current architecture and delivery work.
 
 1. **Workload:** which future calculations actually benefit from a GPU, and at what task/batch size after preparation, transfer and collection? GPU hardware does not accelerate unchanged CPU-only code automatically.
 2. **Task boundary:** what is the smallest useful, independently durable unit that amortizes startup/reuse while fitting memory and shutdown limits? Preserve scientific histories and acceptance requirements.

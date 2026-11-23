@@ -1,6 +1,6 @@
 # Hermes — distributed execution discovery baseline and Dask assessment
 
-**November 21, 2026. Discovery / rough comparison, not an approved formal design or implementation authorization.** Hermes is a distinct standalone project in this repository (`/Users/ricardo/Documents/hermes`), not a Perry feature. The repository location and name are resolved. This document and the [WP05-D retrospective](wp05d-distributed-compute-lessons.md) were relocated from Perry; the [Hermes handoff](README.md) records subsequent decisions, including direction favoring narrow custom infrastructure implemented in Go. The dated Dask investigation below remains documentary evidence, not runtime proof or an instruction to implement Dask. No dependencies, prototype, data replication or remote execution are authorized/performed by this document.
+**November 21, 2026. Discovery / rough comparison, not an approved formal design or implementation authorization.** Hermes is a distinct standalone project in this repository (`/Users/ricardo/Documents/hermes`), not a Perry feature. The repository location and name are resolved. This document and the [WP05-D retrospective](wp05d-distributed-compute-lessons.md) were relocated from Perry; the [documentation index](README.md) points to the current design and implementation plan. Decisions and proposals below retain their historical scope. The dated Dask investigation below remains documentary evidence, not runtime proof or an instruction to implement Dask. No dependencies, prototype, data replication or remote execution are authorized/performed by this document.
 
 **Subsequent design:** [the concrete first-release proposal](design.md) now owns proposed architecture and contracts. This document remains the dated discovery baseline; its earlier open sketches are not a competing design. The proposal is for review, not an implementation authorization.
 
@@ -359,6 +359,24 @@ There are no hidden special libraries behind the two leading Mac mechanisms: the
 **License boundary:** Dagu's `LICENSING.md` and the candidate file SPDX notices identify **GPL-3.0-or-later**; no special copying/embedding exception was found for these candidates or their tests. Moving, renaming and independently maintaining copied source does not remove those conditions. Private use and distribution are different questions; choose Hermes's licensing/distribution policy before taking code and preserve applicable notices. This is not a finding that extraction is forbidden or that every separately communicating application must use Dagu's license. No licensing choice is inferred from the request to investigate reuse.
 
 **Recommendation:** shortlist only publication and native lifecycle/watchdog source plus selected tests. Confirm the required Hermes interfaces and licensing decision before copying. Do not begin a fork, import the graph engine, or recreate Dagu's worker protocol merely to reuse those small components. The original native trial's unresolved signaling denial remains a blocker to certifying copied lifecycle behavior, not a reason to conceal it in an abstraction.
+
+## 13. Design-review provenance
+
+Historical context for the current [design](design.md), not a competing architecture or operating procedure. Current delivery work belongs in the [implementation plan](implementation-plan.md).
+
+During review the operator recalled D1 and D2 preceding a result-dependent D3 and asked whether this explained the earlier staged-registration proposal. The original design session inherited staged registration from the discovery sketch; it did not establish a scientific requirement to add work to the same live scheduler run or compare that approach with separate fixed submissions.
+
+An explicitly authorized read-only interview with WP05D revival coordinator session `01a1d147-797a-720b-ac19-f3b81f4f5415` clarified its approved design/handoff context:
+
+- D2 chooses from a predeclared finite menu and freezes finalists, auxiliary applicability and the comparison family before D3. The realized branch and assigned keys depend on results, not arbitrary new scientific definitions.
+- No scientific requirement for D3 to share a live scheduler submission was identified. Separate fixed submissions can reference accepted earlier results and freeze artifacts under one logical assay.
+- Routine authorized phase continuation must be unattended and deterministic. Replacing dynamic registration with a human/LLM forwarding step would not satisfy that requirement.
+- The roughly 60-hour review was external human log inspection, not an execution cutoff or approval timer.
+- In the coordinator's handoff context the full D phase loop remained future application integration. Existing numerical kernels/probes were not proof of that loop. The interview did not inspect or establish subsequent shipped behavior or actual D1/D2/D3 execution.
+
+The supporting contracts are Perry's [COMPUTE.md](../../perry/root/docs/COMPUTE.md), [D implementation plan](../../perry/root/docs/09_wp05d_implementation_plan.md) and [revival amendments §3](../../perry/root/docs/research/wp05d-revival-amendments.md#3-stopping-freezes-and-inference-bookkeeping). Historical motivation and subsequent execution are not fully verified; any further consultation with the other designer remains deferred unless separately authorized. The interview authorized no code changes, live process inspection or job control.
+
+Other review clarifications placed in the current design include managed Kaggle execution rather than manual exchange as the main operating path, automatic approved resource retries, first-valid acceptance without conflict pauses, one supervised coordinator and reversible packaged agent installation. These are current contracts in the design; the review chronology is not maintained in the README. Dagu reuse was clarified as optional component-level evidence, not a required platform-selection milestone.
 
 ## Sources
 
