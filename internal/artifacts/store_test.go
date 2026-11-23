@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -149,6 +150,116 @@ func TestRootTrailingSeparator(t *testing.T) {
 	if _, err := New(link+string(os.PathSeparator), 1024); err == nil {
 		t.Fatal("accepted symlink root with trailing separator")
 	}
+}
+
+func TestSyncFailuresAreNotAcknowledged(t *testing.T) {
+	for _, stage := range []string{"file", "directory"} {
+		t.Run(stage, func(t *testing.T) {
+			s := newStore(t)
+			injected := errors.New("injected sync failure")
+			if stage == "file" {
+				s.syncFile = func(*os.File) error { return injected }
+			} else {
+				s.syncDirectory = func(string) error { return injected }
+			}
+			if err := s.Publish(context.Background(), digestOf("abc"), 3, strings.NewReader("abc")); !errors.Is(err, injected) {
+				t.Fatalf("sync failure acknowledged: %v", err)
+			}
+			if stage == "file" {
+				if err := s.Contains(digestOf("abc"), 3); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("linked before file sync: %v", err)
+				}
+			} else {
+				// Visibility is deliberately weaker than a successful Publish.
+				if err := s.Contains(digestOf("abc"), 3); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.syncFile = (*os.File).Sync
+			s.syncDirectory = syncDir
+			if err := s.Publish(context.Background(), digestOf("abc"), 3, strings.NewReader("abc")); err != nil {
+				t.Fatalf("retry failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestProcessExitAtPublicationBoundaries(t *testing.T) {
+	for _, stage := range []string{"file_synced", "linked", "directory_synced"} {
+		t.Run(stage, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "blobs")
+			cmd := exec.Command(os.Args[0], "-test.run=^TestPublicationCrashHelper$")
+			cmd.Env = append(os.Environ(), "HERMES_ARTIFACT_CRASH_ROOT="+root, "HERMES_ARTIFACT_CRASH_STAGE="+stage)
+			out, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 73 {
+				t.Fatalf("helper: %v %s", err, out)
+			}
+			s, err := New(root, 1024)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stage == "file_synced" {
+				if err := s.Contains(digestOf("abc"), 3); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("premature destination: %v", err)
+				}
+			} else {
+				f, err := s.Open(digestOf("abc"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				b, err := io.ReadAll(f)
+				f.Close()
+				if err != nil || string(b) != "abc" {
+					t.Fatalf("incomplete linked bytes: %q %v", b, err)
+				}
+			}
+			// A caller that lost its response retries the same bytes; orphan ingress
+			// files may remain but no partial destination is accepted or replaced.
+			if err := s.Publish(context.Background(), digestOf("abc"), 3, strings.NewReader("abc")); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// This child exits without deferred cleanup. It models process loss, not
+// filesystem/power loss; the latter requires target-host evidence.
+func TestPublicationCrashHelper(t *testing.T) {
+	root := os.Getenv("HERMES_ARTIFACT_CRASH_ROOT")
+	if root == "" {
+		return
+	}
+	stage := os.Getenv("HERMES_ARTIFACT_CRASH_STAGE")
+	s, err := New(root, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.syncFile = func(f *os.File) error {
+		if err := f.Sync(); err != nil {
+			return err
+		}
+		if stage == "file_synced" {
+			os.Exit(73)
+		}
+		return nil
+	}
+	s.syncDirectory = func(path string) error {
+		if stage == "linked" {
+			os.Exit(73)
+		}
+		if err := syncDir(path); err != nil {
+			return err
+		}
+		if stage == "directory_synced" {
+			os.Exit(73)
+		}
+		return nil
+	}
+	if err := s.Publish(context.Background(), digestOf("abc"), 3, strings.NewReader("abc")); err != nil {
+		t.Fatal(err)
+	}
+	t.Fatal("crash boundary not reached")
 }
 
 func TestExistingDestinationNeverReplaced(t *testing.T) {

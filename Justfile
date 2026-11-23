@@ -1,7 +1,9 @@
 # Canonical Pi toolbox entrypoints. Pin the exercised toolchain.
 export GOTOOLCHAIN := "go1.25.5"
+# Native development binaries only; not target-qualified deployment packages.
 build:
-    CGO_ENABLED=0 go build ./...
+    mkdir -p dist/local
+    CGO_ENABLED=0 go build -trimpath -o dist/local/ ./cmd/...
 
 lint *paths:
     #!/bin/sh

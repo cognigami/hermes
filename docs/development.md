@@ -8,14 +8,14 @@ The module is `hermes`. The exercised native toolchain is Go **1.25.5**, macOS a
 
 Use Pi's provided tools:
 
-- `build`: discovers `Justfile` recipe `build`; compiles `./...` with `CGO_ENABLED=0`.
+- `build`: discovers `Justfile` recipe `build`; compiles the current `cmd` entrypoints with `CGO_ENABLED=0` into `dist/local/`. These are native development binaries, not qualified deployment packages. Library packages are compiled as entrypoint dependencies and exercised by `test`.
 - `lint`: recipe `lint [paths...]`; formats supplied files/directories with gofmt and runs `go vet ./...`. Without paths it formats `cmd` and `internal`. When coordinating concurrent writers, supply only owned paths. Vet is read-only and repository-wide.
 - `test`: recipe `test [paths...]`; runs `go test ./...` or the supplied repository-relative package directories. Focused example: `internal/contracts`.
 - `deps`: discovers `go.mod`; use it for dependency add/remove/update rather than editing dependencies manually.
 
 These recipes are also available directly as `just build`, `just lint [paths...]`, `just test [paths...]`. Run build, lint, then test after changes. The contracts tests compile and launch the two real fixture executables in test-private directories. They exercise stdin/stdout, preparation once for two units, incremental output, explicit local-publication acknowledgments, finish, domain rejection, validator operational failure and controlled preparation/unit process failure.
 
-SQLite selection is **modernc.org/sqlite v1.44.3**, pinned through `deps` in `go.mod`/`go.sum` with its transitive dependencies. It is a pure-Go driver, keeping the agent build cgo-free. S1 does not open a database; S2 owns driver import, SQL and SQLite settings/qualification. Until that import exists Go marks the dependency indirect. No SQLite durability or runtime behavior is claimed by a successful fixture build. No copied Dagu source or dependency is used.
+SQLite selection is **modernc.org/sqlite v1.44.3**, pinned through `deps` in `go.mod`/`go.sum` with its transitive dependencies. The driver is pure Go; the agent remains cgo-free and does not import controller storage. `internal/controller` owns the driver import, SQL and durability settings. The connected local integration tests below exercise SQLite behavior; a fixture build alone is not durability evidence. No copied Dagu source or dependency is used.
 
 Target deployment packaging and `just build-agent <goos> <goarch>` are not implemented by this foundation. Compilation alone does not qualify service supervision or process-tree containment.
 
@@ -63,4 +63,87 @@ The fixture accepts only its small synthetic files (at most 1 MiB). It writes cl
 
 ## Artifact-store integration
 
-The local store in `internal/artifacts` exposes `New(root,maxSize)`, `Publish(ctx,digest,size,reader)`, `Contains(digest,size)` and `Open(digest)`. The parent directory of the store root must already exist on a trusted local filesystem. Only successful publication (verified bytes, no-replace publication and sync) permits committing metadata references. `Contains` is a metadata-only lookup, not a full rehash or proof that a concurrent publication has completed its directory sync. The controller must persist successful `Publish` outcomes before allowing new metadata references; mere path visibility is insufficient. The store has concurrency, invalid-input and ordinary reader-failure tests and a focused correctness review, but injected file/directory-sync crash-boundary evidence remains outstanding. See tests beside that package.
+The local store in `internal/artifacts` exposes `New(root,maxSize)`, `Publish(ctx,digest,size,reader)`, `Contains(digest,size)` and `Open(digest)`. The parent directory of the store root must already exist on a trusted local filesystem. Only successful publication (verified bytes, no-replace publication and sync) permits committing metadata references. `Contains` is a metadata-only lookup, not a full rehash or proof that a concurrent publication has completed its directory sync. The controller must persist successful `Publish` outcomes before allowing new metadata references; mere path visibility is insufficient. The store has concurrency, invalid-input and ordinary reader-failure tests and a focused correctness review. Additional tests inject file/directory-sync errors and terminate a child process after file sync, after no-replace linking, and after directory sync before return; retry must preserve complete bytes and succeed without replacement. These exercise process-loss boundaries, not power loss or filesystem failure certification. The controller transaction/acknowledgment boundary is exercised separately by the connected integration tests below. See tests beside that package.
+
+## Connected local slice (S2)
+
+The implemented entrypoints are `dist/local/hermes-controller`, `dist/local/hermes-agent` and
+`dist/local/hermes`, alongside the synthetic application/validator binaries. This is an engineering
+slice for the configured **synthetic-local leaf-process profile**, not a qualified host service or
+arbitrary application-process containment backend. S2 correctness and engineering reviews, including focused re-reviews of corrections, passed within
+this scope. The plan owns subsequent slice gates and implementation status.
+
+### Configuration and transport
+
+- Controller flags: `--root`, `--listen` (default `127.0.0.1:8443`), `--ca`, `--cert`, `--key`,
+  `--worker`, `--validator` (absolute executable path).
+- Agent flags: `--root`, `--worker`, `--session`, `--runtime` (absolute executable path),
+  `--url`, `--ca`, `--cert`, `--key`. Worker and execution-session identities persist in its spool;
+  do not mint replacement identities to bypass unfinished ownership.
+- CLI: `hermes [--url ... --ca ... --cert ... --key ...] artifact-put <file>`,
+  `submit <manifest>`, or `status <run>`. Put flags before the subcommand. A submitted manifest is
+  `contracts.Submission`, not the application fixture manifest. Retain its request ID and repeat
+  exactly the same submission to recover a lost response.
+- Transport requires TLS 1.3 and CA-verified mutual certificates. Provisioned certificate common
+  names are `operator` and `worker:<configured-worker-ID>`; the server certificate must match the
+  configured URL. No plaintext mode or remote shell exists. Test certificates are created in private
+  test directories; production credential provisioning/rotation and service permissions are not yet
+  qualified. Keep this slice on the local synthetic endpoint.
+- The entrypoints configure runtime/validator revision `synthetic-v1`, profile `synthetic-local`,
+  one worker, 1 MiB per artifact and finite assignment start/termination/handoff bounds of 5/6/7
+  minutes from issue. These are synthetic development settings, not approved workload budgets.
+
+### Ownership, bytes and acceptance
+
+`internal/contracts/connected.go` owns the shared submission, poll/work, receipt, candidate/final
+report, acknowledgment and aggregate status wire records. The complete package is carried with its
+assignment; the agent checks its digest and assigned unit definitions before journal/start.
+Inputs and preparation references are authorized for that assignment, downloaded and verified into
+the local immutable store, then staged as `inputs/<sha256>` under the application's working directory.
+That directory also contains `manifest.json`, `package.json` and private `output/`. Output manifests
+and declared files are opened nonblocking and must be regular files before reading; a FIFO cannot
+strand the agent outside the application's execution deadline. Idle poll replies must be an explicit
+version-1 empty work envelope, not missing/versionless or dangling assignment data.
+
+The controller holds an OS lock on its state root before opening authority. SQLite uses
+`modernc.org/sqlite v1.44.3` (exercised SQLite **3.51.2**) with verified WAL, synchronous FULL and
+foreign keys enabled. Definitions pin complete unit meaning globally; sealed run membership,
+dependencies, unresolved owners and canonical acceptances have relational constraints. Assignment
+reservation and request outcome commit before a reply. Empty polls reserve nothing and do not
+create durable request rows; a later retry of that ID may reserve newly available work. Once a
+reservation commits, reusing its request ID with a different body fails. A fresh poll cannot replay
+an unresolved assignment after spool loss.
+
+The agent journals receipt and process-start intent before execution, journals each unit grant,
+and durably spools result bytes/manifests before acknowledging local publication to the application.
+Receipt and result delivery retry independently of already-issued local grant progress. Controller
+raw-publication acknowledgment follows durable blob registration and candidate commit, not domain
+acceptance. The current agent retains even acknowledged local bytes; garbage collection is deferred.
+Final execution/result inventory and canonical acceptance are separate.
+
+A single asynchronous validator executes outside database transactions with a five-second process
+timeout and 64 KiB stdout/stderr bounds. At most three completed attempts are allowed; operational
+failures never become domain rejection. Controller-interrupted validation is requeued without
+consuming the completed-attempt budget, including interruption during the third attempt. Exhausted
+operational failures remain visible rather than becoming unschedulable pending work. A changed configured runtime/validator revision cannot validate a pending
+unit under different meaning. First valid acceptance commits uniquely with dependent readiness;
+differing candidates remain visible as conflicts without changing the canonical result. Status reads
+aggregate metadata only; execution quiescence does not imply all units have been accepted.
+
+### Evidence and current limits
+
+The controller tests use a real loopback mTLS listener, a CLI subprocess, an independent agent loop,
+and real synthetic application/validator processes. They exercise two prepared-once independent
+units followed by a dependent package, input/preparation staging, delivery outages, lost replies,
+identity/role/malformed-input checks, canonical acceptance and metadata-only status. Test-only
+subprocess fault seams exit immediately before/after actual assignment, candidate and acceptance
+commits; recovery checks rollback/persistence and atomic dependent readiness. A separate production
+controller-binary kill test establishes post-acknowledgment persistence. None is power-loss or
+service/host deployment certification.
+
+Preparation-started or unit-started unfinished work fails closed as uncertain on agent restart;
+there is no process adoption or automatic replay. Drain, full process-tree lifecycle/reconciliation,
+aggregate admission/resource recovery and indexed ready-package scheduling remain later slices.
+The current scheduler scans package metadata, and status exposes only acceptance/quiescence,
+validation-failure and conflict counts. There is no automatic retry of domain-rejected calculations,
+finite exchange, managed Kaggle or workflow successor implementation yet.

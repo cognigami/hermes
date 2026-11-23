@@ -218,6 +218,17 @@ Drain returns `complete` only when affected execution is confirmed quiescent and
 
 Process-tree containment and enforcement are OS-specific admission requirements. Proposed backends are Linux cgroups, Windows Job Objects if native Windows is selected, and a separately qualified macOS process-tree backend. Do not claim hard host-RAM/VRAM limits on a platform that only samples usage. A profile requiring hard enforcement is ineligible on a backend without it. Windows versus WSL and macOS enforcement limitations must be settled before promising those release capabilities.
 
+A process group alone is not proof of generic descendant containment: applications may create new
+sessions/groups or launch external services without being hostile. A group-based backend can qualify
+only an execution contract that establishes all owned descendants remain in the controlled group,
+plus a reliable whole-group exit check. Otherwise containment remains unsupported/unknown and
+admission must fail closed. Sending a signal proves delivery, not quiescence. A persisted numeric
+PID/PGID, command name, approximate start timestamp, leader disappearance or `ECHILD` alone is
+not restart ownership proof; never signal a potentially reused identity or license replacement from
+such evidence. Where restart cannot establish safe ownership/quiescence, preserve the start records
+and results, report uncertainty and prohibit new starts. An additional ownership helper is not required
+merely to avoid reporting uncertainty; any future helper needs its own failure and qualification argument.
+
 ## 12. Finite/offline batches
 
 The controller transactionally reserves exact units in an assignment **before** emitting an immutable bundle. Bundle contents: schema/runtime references, finite assignment and deadlines, unit/package manifests, permitted input subset, application runtime artifacts, and an inventory of all blob digests. Output is a separate compact inventory and per-unit result artifacts; runtime caches/log debris must not pollute the retrievable result set.

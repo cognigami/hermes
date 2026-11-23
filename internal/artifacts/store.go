@@ -19,6 +19,10 @@ import (
 type Store struct {
 	root    string
 	maxSize int64
+	// Narrow I/O seams let package tests inject durability failures. Production
+	// stores always use the real filesystem sync operations below.
+	syncFile      func(*os.File) error
+	syncDirectory func(string) error
 }
 
 func New(root string, maxSize int64) (*Store, error) {
@@ -41,7 +45,7 @@ func New(root string, maxSize int64) (*Store, error) {
 	if err := syncDir(filepath.Dir(root)); err != nil {
 		return nil, err
 	}
-	return &Store{root: root, maxSize: maxSize}, nil
+	return &Store{root: root, maxSize: maxSize, syncFile: (*os.File).Sync, syncDirectory: syncDir}, nil
 }
 
 func validDigest(digest string) bool {
@@ -93,7 +97,7 @@ func (s *Store) Publish(ctx context.Context, digest string, size int64, src io.R
 	if hex.EncodeToString(hash.Sum(nil)) != digest {
 		return errors.New("artifact digest mismatch")
 	}
-	if err := f.Sync(); err != nil {
+	if err := s.syncFile(f); err != nil {
 		return err
 	}
 	if err := f.Close(); err != nil {
@@ -110,7 +114,7 @@ func (s *Store) Publish(ctx context.Context, digest string, size int64, src io.R
 			return err
 		}
 	}
-	return syncDir(s.root)
+	return s.syncDirectory(s.root)
 }
 
 // Contains checks trusted immutable metadata, not payload bytes. This is not an
