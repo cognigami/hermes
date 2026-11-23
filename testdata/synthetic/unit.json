@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "unit_id": "unit-a",
+  "spec_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "inputs": [],
+  "operation": "synthetic-v1",
+  "runtime": "synthetic-v1",
+  "validator": "synthetic-v1",
+  "dependencies": [],
+  "required_capabilities": []
+}

@@ -2,17 +2,20 @@
 
 ## Purpose and authority
 
-This is a proposed implementation handoff to a coordinator, **not an implementation release**.
+This is the implementation handoff and temporary task ledger. Local implementation is released;
+completion of this plan does not itself certify a deployment.
 [Design](design.md) owns architecture, identities, state transitions and operating contracts;
 [this plan](implementation-plan.md) owns delivery sequence and temporary task status.
 [Coordination](COORDINATION.md) owns delegation, launch, messaging and review rules.
 If implementation exposes a contract problem, resolve it in the design rather than silently changing it here.
 
-**Current authority: documentation only.** No code implementation, dependency installation,
-Hermes runtime/trial launch, host/service installation, networking, research/market-data access or replication,
-Kaggle submission, Perry file/job change, or cross-project agent contact is authorized by this plan.
-Documentation delegation/review under COORDINATION.md is in scope. A later implementation release can authorize routine local engineering with synthetic fixtures;
-actual host/cloud exercises additionally need the relevant access and workload release.
+**Current authority: local engineering released by the operator.** Local implementation, dependency
+installation, builds, tests and synthetic runtime fixtures are permitted. Remote host/cloud exercises,
+research/market-data access or replication, Kaggle submissions and cross-project contact remain excluded.
+Before any Perry access, integration or contact, consult the operator, who must confirm the current study
+is complete. Do not use Perry as a fixture. Local service exercises, if undertaken, must be explicitly
+synthetic and isolated from existing services. Sandbox denials are boundaries: report the exact blocked
+operation and an operator command; do not retry through alternate tools or paths.
 Neither completing a slice nor obtaining a review expands that authority.
 Within released work, the coordinator decides ordinary engineering details without repeated operator consultation.
 
@@ -56,8 +59,8 @@ Dependencies mean integrated, reviewed behavior, not merely an interface stub.
 
 | ID | Slice | Depends on | Suggested owner | Status |
 |---|---|---|---|---|
-| S1 | Foundation and executable contracts | implementation release | foundation worker | Not started |
-| S2 | Complete local acceptance path | S1 | vertical-slice worker | Not started |
+| S1 | Foundation and executable contracts | implementation release | hermes-foundation | Complete: full build/lint/test passed; independent correctness review and focused re-review passed after three contract fixes |
+| S2 | Complete local acceptance path | S1 | hermes-foundation (vertical slice); coordinator (artifact integration) | In progress: S1 gate clear, connected interfaces agreed. Artifact groundwork reviewed; full connected path and crash-boundary tests pending |
 | S3 | Independent execution, control and recovery | S2 | recovery worker | Not started |
 | S4 | Aggregate admission and resource recovery | S3 | scheduling worker | Not started |
 | S5 | Qualified native build/service packaging | S3; S4 for admission | platform worker | Not started |
@@ -234,12 +237,12 @@ do not call mocked integration a certified first release. Resolve concrete findi
 ## Copyable coordinator start brief
 
 > Coordinate Hermes using `docs/design.md` for contracts, `docs/implementation-plan.md` for slices/status,
-> and `docs/COORDINATION.md` for coordination. Current authority is documentation only: do not implement,
-> install dependencies, launch Hermes runtime processes/trials, install services, network hosts, access/replicate research or
-> market data, submit Kaggle work, alter Perry files/jobs, or contact cross-project agents. A later explicit
-> implementation release may permit local synthetic engineering; actual host/cloud exercises still need the
-> relevant access/workload release. Do not infer either release from this plan or reviewer approval.
-> Once implementation is released, own interfaces/context/decisions/integration and operator communication;
+> and `docs/COORDINATION.md` for coordination. Local implementation, dependencies, builds/tests and
+> synthetic runtime fixtures are released. Remote host/cloud exercises, research/market data, Kaggle work
+> and cross-project contact remain excluded. Consult the operator before any Perry access or integration;
+> the current Perry study must first be complete. Respect sandbox denials and report the required operator
+> command without a workaround. Do not infer expanded authority from this plan or reviewer approval.
+> Own interfaces/context/decisions/integration and operator communication;
 > default to delegating substantial bounded work and independent review, with exact disjoint write scopes.
 > Use Herdr tabs in your own inherited workspace, returned root pane IDs, `--no-focus`, and the exact
 > `--presets:preset eng` option for every launched Pi worker/reviewer. No splits or convenience launchers

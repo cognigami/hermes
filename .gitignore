@@ -32,6 +32,8 @@ go.work.sum
 # Local feasibility trials (binaries, fixtures, logs and runtime state)
 /.local-trials/
 
+/bin/
+
 # Editor/IDE
 # .idea/
 # .vscode/
