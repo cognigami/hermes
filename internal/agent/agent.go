@@ -14,7 +14,6 @@ import (
 	"hermes/internal/artifacts"
 	"hermes/internal/contracts"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -25,21 +24,34 @@ type Config struct {
 	RuntimeArgv                                 []string
 	Client                                      *Client
 	MaxArtifactBytes                            int64
+	ShutdownGrace                               time.Duration
 }
 type journal struct {
-	Work           contracts.Work        `json:"work"`
-	ProcessStarted bool                  `json:"process_started"`
-	Started        []string              `json:"started"`
-	Candidates     []contracts.Candidate `json:"candidates"`
-	Delivered      int                   `json:"delivered"`
-	Quiescent      bool                  `json:"quiescent"`
-	FinalSent      bool                  `json:"final_sent"`
+	Work              contracts.Work              `json:"work"`
+	ProcessStarted    bool                        `json:"process_started"`
+	Started           []string                    `json:"started"`
+	Candidates        []contracts.Candidate       `json:"candidates"`
+	Delivered         int                         `json:"delivered"`
+	Quiescent         bool                        `json:"quiescent"`
+	FinalSent         bool                        `json:"final_sent"`
+	Control           contracts.AssignmentControl `json:"control"`
+	ReceiptWall       time.Time                   `json:"receipt_wall"`
+	Uncertain         bool                        `json:"uncertain"`
+	GateClosed        bool                        `json:"gate_closed"`
+	ReconcileRevision int64                       `json:"reconcile_revision"`
+	OperationalReason string                      `json:"operational_reason,omitempty"`
 }
 type runner struct {
-	cfg   Config
-	mu    sync.Mutex
-	j     journal
-	store *artifacts.Store
+	cfg               Config
+	mu                sync.Mutex
+	j                 journal
+	store             *artifacts.Store
+	received          time.Time
+	lastWall          time.Time
+	terminalPersisted bool
+	controlDurable    int64
+	// Tests may replace signals on this owned live child; never a numeric PID lookup.
+	testSignal func(*os.Process, os.Signal) error
 }
 
 func ID() string {
@@ -123,7 +135,13 @@ func Run(ctx context.Context, cfg Config) error {
 	if e != nil {
 		return e
 	}
-	r := &runner{cfg: cfg, store: store}
+	if cfg.ShutdownGrace == 0 {
+		cfg.ShutdownGrace = 100 * time.Millisecond
+	}
+	if cfg.ShutdownGrace < 0 {
+		return errors.New("invalid shutdown grace")
+	}
+	r := &runner{cfg: cfg, store: store, received: time.Now()}
 	if b, e := os.ReadFile(filepath.Join(cfg.Root, "journal.json")); e == nil {
 		if e = json.Unmarshal(b, &r.j); e != nil {
 			return e
@@ -138,8 +156,23 @@ func Run(ctx context.Context, cfg Config) error {
 		if !r.j.FinalSent && (a.WorkerID != cfg.WorkerID || a.SessionID != cfg.SessionID || a.Runtime != cfg.Runtime || a.Profile != cfg.Profile) {
 			return errors.New("retained assignment incompatible with configured worker")
 		}
-		if (r.j.ProcessStarted || len(r.j.Started) > 0) && !r.j.Quiescent {
-			return errors.New("started unfinished assignment: ownership uncertain, S3 reconciliation required")
+		if (r.j.Uncertain || r.j.ProcessStarted || len(r.j.Started) > 0) && !r.j.Quiescent {
+			r.j.Uncertain = true
+			if e = r.save(); e != nil {
+				return e
+			}
+			if e = r.reportReconciliation(ctx); e != nil {
+				return e
+			}
+			if e = r.deliver(ctx); e != nil {
+				return e
+			}
+			return errors.New("started unfinished assignment: ownership uncertain; no process adoption or new starts")
+		}
+		if !r.j.FinalSent {
+			if e = r.reportReconciliation(ctx); e != nil {
+				return e
+			}
 		}
 	} else if !errors.Is(e, os.ErrNotExist) {
 		return e
@@ -180,7 +213,10 @@ func Run(ctx context.Context, cfg Config) error {
 		if r.j.Work.Assignment != nil && r.j.Work.Assignment.AssignmentID == a.AssignmentID {
 			return errors.New("controller reissued terminal assignment")
 		}
-		r.j = journal{Work: work}
+		r.received = time.Now()
+		r.controlDurable = 0
+		r.lastWall = time.Time{}
+		r.j = journal{Work: work, ReceiptWall: r.received.UTC()}
 		if e = r.save(); e != nil {
 			return e
 		}
@@ -208,24 +244,65 @@ func (r *runner) receipt(suffix string) contracts.Receipt {
 	a := r.j.Work.Assignment
 	return contracts.Receipt{SchemaVersion: 1, RequestID: a.AssignmentID + ":" + suffix, AssignmentID: a.AssignmentID, WorkerID: a.WorkerID, SessionID: a.SessionID}
 }
-func (r *runner) assignment(ctx context.Context) error {
+func (r *runner) assignment(ctx context.Context) (resultErr error) {
 	// Delivery runs independently of grant progress. Local publication is the only
 	// acknowledgment needed before the next issued unit; outage retains bytes.
 	deliveryCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	deliveryResult := make(chan error, 1)
 	go func() { deliveryResult <- r.deliver(deliveryCtx) }()
-	if !r.j.Quiescent {
-		if e := r.execute(ctx); e != nil {
-			cancel()
-			<-deliveryResult
-			return e
+	controlCtx, stopControl := context.WithCancel(ctx)
+	controlDone := make(chan error, 1)
+	go func() {
+		err := r.controlLoop(controlCtx)
+		if err != nil && controlCtx.Err() == nil {
+			r.mu.Lock()
+			r.j.GateClosed = true
+			r.save()
+			r.mu.Unlock()
 		}
+		controlDone <- err
+	}()
+	defer func() {
+		stopControl()
+		e := <-controlDone
+		if resultErr == nil && e != nil && !errors.Is(e, context.Canceled) {
+			resultErr = e
+		}
+	}()
+	var executionErr error
+	if !r.j.Quiescent {
+		executionErr = r.execute(ctx)
+	}
+	if executionErr != nil && !r.terminalPersisted {
+		r.mu.Lock()
+		uncertain := r.j.Uncertain
+		r.mu.Unlock()
+		if uncertain {
+			if err := r.reportReconciliation(ctx); err != nil {
+				cancel()
+				<-deliveryResult
+				return fmt.Errorf("%v; report: %w", executionErr, err)
+			}
+			if err := <-deliveryResult; err != nil {
+				return fmt.Errorf("%v; delivery: %w", executionErr, err)
+			}
+			return executionErr
+		}
+		cancel()
+		<-deliveryResult
+		return executionErr
+	}
+	if e := r.reportReconciliation(ctx); e != nil {
+		cancel()
+		<-deliveryResult
+		return e
 	}
 	if e := <-deliveryResult; e != nil {
 		return e
 	}
-	final := contracts.FinalReport{Receipt: r.receipt("final")}
+	r.mu.Lock()
+	final := contracts.FinalReport{Receipt: r.receipt("final"), OperationalReason: r.j.OperationalReason}
 	for _, c := range r.j.Candidates {
 		final.Completed = append(final.Completed, c.UnitID)
 	}
@@ -238,8 +315,19 @@ func (r *runner) assignment(ctx context.Context) error {
 		}
 		if !found {
 			final.NeverStarted = append(final.NeverStarted, u.UnitID)
+		} else {
+			completed := false
+			for _, c := range r.j.Candidates {
+				if c.UnitID == u.UnitID {
+					completed = true
+				}
+			}
+			if !completed {
+				final.Interrupted = append(final.Interrupted, u.UnitID)
+			}
 		}
 	}
+	r.mu.Unlock()
 	for {
 		e := r.cfg.Client.Do(ctx, "POST", "/v1/final", final, nil)
 		if e == nil {
@@ -249,8 +337,18 @@ func (r *runner) assignment(ctx context.Context) error {
 			return e
 		}
 	}
+	r.mu.Lock()
 	r.j.FinalSent = true
-	return r.save()
+	e := r.save()
+	controlled := r.j.Control.Revision > 0
+	r.mu.Unlock()
+	if e != nil {
+		return e
+	}
+	if executionErr != nil && !controlled {
+		return executionErr
+	}
+	return nil
 }
 func (r *runner) deliver(ctx context.Context) error {
 	// Receipt reporting is retryable delivery, not permission to execute the
@@ -267,7 +365,7 @@ func (r *runner) deliver(ctx context.Context) error {
 	for {
 		r.mu.Lock()
 		index := r.j.Delivered
-		done := r.j.Quiescent
+		done := r.j.Quiescent || r.j.Uncertain
 		var c contracts.Candidate
 		if index < len(r.j.Candidates) {
 			c = r.j.Candidates[index]
@@ -326,158 +424,4 @@ func (b *logBuffer) Write(p []byte) (int, error) {
 		return 0, errors.New("application log limit")
 	}
 	return b.Buffer.Write(p)
-}
-func (r *runner) execute(ctx context.Context) error {
-	a := r.j.Work.Assignment
-	dir := filepath.Join(r.cfg.Root, "assignment-"+contracts.Hash([]byte(a.AssignmentID)))
-	if e := os.MkdirAll(dir, 0700); e != nil {
-		return e
-	}
-	output := filepath.Join(dir, "output")
-	if e := os.MkdirAll(output, 0700); e != nil {
-		return e
-	}
-	manifest := filepath.Join(dir, "manifest.json")
-	localManifest := struct {
-		SchemaVersion int                   `json:"schema_version"`
-		Assignment    *contracts.Assignment `json:"assignment"`
-		Units         []contracts.Unit      `json:"units"`
-	}{1, a, r.j.Work.Units}
-	if e := durable(manifest, localManifest); e != nil {
-		return e
-	}
-	if e := durable(filepath.Join(dir, "package.json"), r.j.Work.Package); e != nil {
-		return e
-	}
-	if e := r.stage(ctx, dir); e != nil {
-		return e
-	}
-	bounded, cancel := context.WithDeadline(ctx, a.TerminateAt)
-	defer cancel()
-	args := append([]string{}, r.cfg.RuntimeArgv[1:]...)
-	args = append(args, "--manifest", manifest, "--output", output)
-	cmd := exec.CommandContext(bounded, r.cfg.RuntimeArgv[0], args...)
-	cmd.Dir = dir
-	stdin, e := cmd.StdinPipe()
-	if e != nil {
-		return e
-	}
-	defer stdin.Close()
-	stdout, e := cmd.StdoutPipe()
-	if e != nil {
-		return e
-	}
-	logs := &logBuffer{}
-	cmd.Stderr = logs
-	r.mu.Lock()
-	r.j.ProcessStarted = true
-	e = r.save()
-	r.mu.Unlock()
-	if e != nil {
-		return e
-	}
-	if e = cmd.Start(); e != nil {
-		return e
-	}
-	finished := false
-	defer func() {
-		if !finished {
-			cmd.Process.Kill()
-			cmd.Wait()
-		}
-	}()
-	reader := contracts.MessageReader(stdout)
-	m, e := contracts.ReadMessage(reader)
-	if e != nil || m.Type != "ready" {
-		return fmt.Errorf("application ready: %v", e)
-	}
-	for _, u := range a.Units {
-		if err := bounded.Err(); err != nil {
-			return err
-		}
-		if !time.Now().Before(a.StopNewUnitsAt) {
-			break
-		}
-		r.mu.Lock()
-		r.j.Started = append(r.j.Started, u.UnitID)
-		e = r.save()
-		r.mu.Unlock()
-		if e != nil {
-			return e
-		}
-		if e = contracts.WriteMessage(stdin, contracts.Message{SchemaVersion: 1, Type: "execute_unit", UnitID: u.UnitID}); e != nil {
-			return e
-		}
-		m, e = contracts.ReadMessage(reader)
-		if e != nil {
-			return e
-		}
-		if m.Type != "unit_result" || m.UnitID != u.UnitID {
-			return errors.New("unexpected unit result")
-		}
-		root, e := os.OpenRoot(output)
-		if e != nil {
-			return e
-		}
-		f, e := openRegular(root, m.ManifestPath)
-		if e != nil {
-			root.Close()
-			return e
-		}
-		var candidate contracts.Candidate
-		e = contracts.Decode(f, &candidate)
-		f.Close()
-		if e != nil {
-			root.Close()
-			return e
-		}
-		if e = candidate.Validate(); e != nil {
-			root.Close()
-			return e
-		}
-		if candidate.UnitID != u.UnitID || candidate.SpecDigest != u.SpecDigest || candidate.AssignmentID != a.AssignmentID || candidate.AttemptID != a.AssignmentID {
-			root.Close()
-			return errors.New("unbound candidate")
-		}
-		for _, ref := range candidate.Files {
-			src, e := openRegular(root, ref.Path)
-			if e != nil {
-				root.Close()
-				return e
-			}
-			e = r.store.Publish(ctx, ref.Artifact.Digest, ref.Artifact.Size, src)
-			src.Close()
-			if e != nil {
-				root.Close()
-				return e
-			}
-		}
-		root.Close()
-		r.mu.Lock()
-		r.j.Candidates = append(r.j.Candidates, candidate)
-		e = r.save()
-		r.mu.Unlock()
-		if e != nil {
-			return e
-		}
-		if e = contracts.WriteMessage(stdin, contracts.Message{SchemaVersion: 1, Type: "published", UnitID: u.UnitID}); e != nil {
-			return e
-		}
-	}
-	if e = contracts.WriteMessage(stdin, contracts.Message{SchemaVersion: 1, Type: "finish"}); e != nil {
-		return e
-	}
-	m, e = contracts.ReadMessage(reader)
-	if e != nil || m.Type != "finished" {
-		return errors.New("missing finished")
-	}
-	if e = cmd.Wait(); e != nil {
-		return e
-	}
-	finished = true
-	r.mu.Lock()
-	r.j.Quiescent = true
-	e = r.save()
-	r.mu.Unlock()
-	return e
 }

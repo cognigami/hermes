@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -27,7 +28,7 @@ func run() error {
 	ca := flag.String("ca", "", "client CA")
 	cert := flag.String("cert", "", "server certificate")
 	key := flag.String("key", "", "server key")
-	worker := flag.String("worker", "synthetic-local", "permitted worker")
+	worker := flag.String("workers", "synthetic-local", "comma-separated permitted workers")
 	validator := flag.String("validator", "", "absolute synthetic validator executable")
 	flag.Parse()
 	b, e := os.ReadFile(*ca)
@@ -38,7 +39,7 @@ func run() error {
 	if !pool.AppendCertsFromPEM(b) {
 		return fmt.Errorf("invalid CA")
 	}
-	c, e := controller.Open(controller.Config{Root: *root, WorkerID: *worker, Runtime: "synthetic-v1", Validator: "synthetic-v1", Profile: "synthetic-local", ValidatorArgv: []string{*validator}, MaxArtifactBytes: 1 << 20})
+	c, e := controller.Open(controller.Config{Root: *root, Workers: strings.Split(*worker, ","), Runtime: "synthetic-v1", Validator: "synthetic-v1", Profile: "synthetic-local", ValidatorArgv: []string{*validator}, MaxArtifactBytes: 1 << 20})
 	if e != nil {
 		return e
 	}

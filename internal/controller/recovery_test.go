@@ -92,7 +92,7 @@ func TestControllerProcessLoss(t *testing.T) {
 			t.Fatal(e)
 		}
 		t.Cleanup(func() { log.Close() })
-		process = exec.Command(filepath.Join(dir, "hermes-controller"), "--root", f.cfg.Root, "--listen", strings.TrimPrefix(url, "https://"), "--ca", f.ca, "--cert", filepath.Join(dir, "server.crt"), "--key", filepath.Join(dir, "server.key"), "--worker", "local", "--validator", f.cfg.ValidatorArgv[0])
+		process = exec.Command(filepath.Join(dir, "hermes-controller"), "--root", f.cfg.Root, "--listen", strings.TrimPrefix(url, "https://"), "--ca", f.ca, "--cert", filepath.Join(dir, "server.crt"), "--key", filepath.Join(dir, "server.key"), "--workers", "local", "--validator", f.cfg.ValidatorArgv[0])
 		process.Stdout = log
 		process.Stderr = log
 		if e = process.Start(); e != nil {

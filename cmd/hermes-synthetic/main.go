@@ -21,14 +21,23 @@ func main() {
 func run() error {
 	manifest := flag.String("manifest", "", "local fixture manifest")
 	output := flag.String("output", "", "private output directory")
+	delay := flag.Int("delay-millis", -1, "override per-unit synthetic delay")
+	preparationDelay := flag.Int("prepare-delay-millis", 0, "synthetic preparation delay")
 	flag.Parse()
 	var cfg synthetic.Manifest
 	if e := synthetic.Load(*manifest, &cfg); e != nil {
 		return e
 	}
+	if *delay >= 0 {
+		cfg.DelayMillis = *delay
+	}
+	if *preparationDelay < 0 || *preparationDelay > 60000 {
+		return errors.New("invalid preparation delay")
+	}
 	if e := cfg.Validate(); e != nil {
 		return e
 	}
+	time.Sleep(time.Duration(*preparationDelay) * time.Millisecond)
 	if cfg.Failure == "exit_prepare" {
 		return errors.New("controlled preparation failure")
 	}

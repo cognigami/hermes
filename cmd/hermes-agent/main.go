@@ -26,6 +26,8 @@ func run() error {
 	ca := flag.String("ca", "", "server CA")
 	cert := flag.String("cert", "", "worker certificate")
 	key := flag.String("key", "", "worker key")
+	var runtimeArgs []string
+	flag.Func("runtime-arg", "one allowlisted runtime argv value (repeatable)", func(s string) error { runtimeArgs = append(runtimeArgs, s); return nil })
 	flag.Parse()
 	client, e := agent.NewClient(*url, *ca, *cert, *key)
 	if e != nil {
@@ -33,7 +35,7 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	e = agent.Run(ctx, agent.Config{Root: *root, WorkerID: *worker, SessionID: *session, Runtime: "synthetic-v1", Profile: "synthetic-local", RuntimeArgv: []string{*runtime}, Client: client, MaxArtifactBytes: 1 << 20})
+	e = agent.Run(ctx, agent.Config{Root: *root, WorkerID: *worker, SessionID: *session, Runtime: "synthetic-v1", Profile: "synthetic-local", RuntimeArgv: append([]string{*runtime}, runtimeArgs...), Client: client, MaxArtifactBytes: 1 << 20})
 	if errors.Is(e, context.Canceled) {
 		return nil
 	}

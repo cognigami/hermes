@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strings"
 )
 
 func main() {
@@ -28,7 +29,7 @@ func run() error {
 	flag.Parse()
 	args := flag.Args()
 	if len(args) != 2 {
-		return fmt.Errorf("usage: hermes [TLS flags] artifact-put <file> | submit <manifest> | status <run>")
+		return fmt.Errorf("usage: hermes [TLS flags] artifact-put <file> | submit <manifest> | status <run> | control <json> | control-status <kind:id> | lost-spool <json>")
 	}
 	client, e := agent.NewClient(*endpoint, *ca, *cert, *key)
 	if e != nil {
@@ -73,6 +74,41 @@ func run() error {
 			return e
 		}
 		return json.NewEncoder(os.Stdout).Encode(outcome)
+	case "control", "lost-spool":
+		f, e := os.Open(args[1])
+		if e != nil {
+			return e
+		}
+		defer f.Close()
+		if args[0] == "control" {
+			var request contracts.ControlRequest
+			if e = contracts.Decode(f, &request); e != nil {
+				return e
+			}
+			var outcome contracts.ControlStatus
+			if e = client.Do(ctx, "POST", "/v1/control", request, &outcome); e != nil {
+				return e
+			}
+			return json.NewEncoder(os.Stdout).Encode(outcome)
+		}
+		var request contracts.LostSpoolResolution
+		if e = contracts.Decode(f, &request); e != nil {
+			return e
+		}
+		if e = client.Do(ctx, "POST", "/v1/lost-spool", request, nil); e != nil {
+			return e
+		}
+		return json.NewEncoder(os.Stdout).Encode(contracts.Acknowledgment{SchemaVersion: 1, Received: true})
+	case "control-status":
+		parts := strings.SplitN(args[1], ":", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("control-status requires run:<id> or worker:<id>")
+		}
+		var status contracts.ControlStatus
+		if e = client.Do(ctx, "GET", "/v1/control/status?kind="+url.QueryEscape(parts[0])+"&target="+url.QueryEscape(parts[1]), nil, &status); e != nil {
+			return e
+		}
+		return json.NewEncoder(os.Stdout).Encode(status)
 	case "status":
 		var s contracts.Status
 		if e = client.Do(ctx, "GET", "/v1/status?run="+url.QueryEscape(args[1]), nil, &s); e != nil {

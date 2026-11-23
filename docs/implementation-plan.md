@@ -61,8 +61,8 @@ Dependencies mean integrated, reviewed behavior, not merely an interface stub.
 |---|---|---|---|---|
 | S1 | Foundation and executable contracts | implementation release | hermes-foundation | Complete: full build/lint/test passed; independent correctness review and focused re-review passed after three contract fixes |
 | S2 | Complete local acceptance path | S1 | hermes-foundation (vertical slice); coordinator (artifact integration) | Complete within synthetic-local leaf-process scope: full build/lint/test and commit-crash evidence passed; independent correctness and engineering reviews plus focused re-reviews passed after four fixes |
-| S3 | Independent execution, control and recovery | S2 | hermes-foundation (recovery); coordinator (interfaces/integration) | Preparing concrete controls/reconciliation design; implementation not started |
-| S4 | Aggregate admission and resource recovery | S3 | scheduling worker | Not started |
+| S3 | Independent execution, control and recovery | S2 | hermes-foundation (recovery); coordinator (interfaces/integration) | Complete within synthetic leaf scope: full checks and independent correctness/engineering re-reviews passed after three fixes. Generic descendants/native services remain unqualified |
+| S4 | Aggregate admission and resource recovery | S3 | scheduling worker pending interface handoff | Preparing host-manager/allocation interfaces; implementation not started |
 | S5 | Qualified native build/service packaging | S3; S4 for admission | platform worker | Not started |
 | S6 | Finite runner and explicit exchange | S3 | finite worker | Not started |
 | S7 | Managed Kaggle lifecycle | S4, S6 | platform-adapter worker | Not started |

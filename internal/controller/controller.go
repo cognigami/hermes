@@ -17,13 +17,15 @@ import (
 )
 
 type Config struct {
-	Root             string
-	WorkerID         string
-	Profile          string
-	Runtime          string
-	Validator        string
-	ValidatorArgv    []string
-	MaxArtifactBytes int64
+	Root                                    string
+	Workers                                 []string
+	MaxAttempts                             int
+	StopAfter, TerminateAfter, HandoffAfter time.Duration
+	Profile                                 string
+	Runtime                                 string
+	Validator                               string
+	ValidatorArgv                           []string
+	MaxArtifactBytes                        int64
 }
 type Controller struct {
 	cfg   Config
@@ -35,8 +37,29 @@ type Controller struct {
 }
 
 func Open(cfg Config) (*Controller, error) {
-	if cfg.Root == "" || cfg.WorkerID == "" || cfg.Profile == "" || cfg.Runtime == "" || cfg.Validator == "" || len(cfg.ValidatorArgv) == 0 || cfg.MaxArtifactBytes <= 0 {
+	if cfg.Root == "" || len(cfg.Workers) == 0 || cfg.Profile == "" || cfg.Runtime == "" || cfg.Validator == "" || len(cfg.ValidatorArgv) == 0 || cfg.MaxArtifactBytes <= 0 {
 		return nil, errors.New("incomplete controller config")
+	}
+	if cfg.MaxAttempts == 0 {
+		cfg.MaxAttempts = 2
+	}
+	if cfg.MaxAttempts < 1 {
+		return nil, errors.New("invalid max attempts")
+	}
+	if cfg.StopAfter == 0 && cfg.TerminateAfter == 0 && cfg.HandoffAfter == 0 {
+		cfg.StopAfter = 5 * time.Minute
+		cfg.TerminateAfter = 6 * time.Minute
+		cfg.HandoffAfter = 7 * time.Minute
+	}
+	if cfg.StopAfter <= 0 || cfg.StopAfter > cfg.TerminateAfter || cfg.TerminateAfter >= cfg.HandoffAfter {
+		return nil, errors.New("invalid finite profile bounds")
+	}
+	seenWorkers := map[string]bool{}
+	for _, id := range cfg.Workers {
+		if id == "" || len(id) > 256 || seenWorkers[id] {
+			return nil, errors.New("invalid worker identities")
+		}
+		seenWorkers[id] = true
 	}
 	if !filepath.IsAbs(cfg.ValidatorArgv[0]) {
 		return nil, errors.New("validator executable must be absolute")
@@ -88,10 +111,24 @@ func Open(cfg Config) (*Controller, error) {
 	if _, e = c.db.Exec(schema); e != nil {
 		return nil, e
 	}
+	if _, e = c.db.Exec(controlSchema); e != nil {
+		return nil, e
+	}
 	// Interrupted validation did not commit an operational failure. Refund its
 	// claim so even an interrupted third invocation can finish after recovery.
 	if _, e = c.db.Exec("UPDATE candidates SET state='pending',attempts=max(attempts-1,0) WHERE state='validating'"); e != nil {
 		return nil, e
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	if err = c.reconcileTerminal(tx); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
 	}
 	success = true
 	return c, nil
@@ -281,11 +318,11 @@ func (c *Controller) submit(tx *sql.Tx, s contracts.Submission) (any, error) {
 	return contracts.Acknowledgment{SchemaVersion: 1, RunID: s.RunID}, nil
 }
 func (c *Controller) poll(tx *sql.Tx, p contracts.PollRequest) (any, error) {
-	if p.SchemaVersion != 1 || p.WorkerID != c.cfg.WorkerID || p.SessionID == "" || len(p.SessionID) > 256 {
+	if p.SchemaVersion != 1 || !c.allowedWorker(p.WorkerID) || p.SessionID == "" || len(p.SessionID) > 256 {
 		return nil, errors.New("invalid worker session")
 	}
 	var b []byte
-	e := tx.QueryRow("SELECT manifest FROM assignments WHERE worker=? AND final IS NULL ORDER BY id LIMIT 1", p.WorkerID).Scan(&b)
+	e := tx.QueryRow("SELECT manifest FROM assignments WHERE worker=? AND final IS NULL AND NOT EXISTS(SELECT 1 FROM terminal_evidence t WHERE t.assignment_id=assignments.id) ORDER BY id LIMIT 1", p.WorkerID).Scan(&b)
 	if e == nil {
 		var a contracts.Assignment
 		if e = json.Unmarshal(b, &a); e != nil {
@@ -301,7 +338,14 @@ func (c *Controller) poll(tx *sql.Tx, p contracts.PollRequest) (any, error) {
 	if !errors.Is(e, sql.ErrNoRows) {
 		return nil, e
 	}
-	rows, e := tx.Query("SELECT run_id,manifest,digest FROM packages ORDER BY run_id,id")
+	var paused int
+	if e = tx.QueryRow("SELECT COUNT(*) FROM target_controls WHERE kind='worker' AND target=? AND action='drain'", p.WorkerID).Scan(&paused); e != nil {
+		return nil, e
+	}
+	if paused > 0 {
+		return contracts.Work{SchemaVersion: 1}, nil
+	}
+	rows, e := tx.Query("SELECT run_id,manifest,digest FROM packages WHERE NOT EXISTS(SELECT 1 FROM target_controls t WHERE t.kind='run' AND t.target=packages.run_id AND t.action='drain') ORDER BY run_id,id")
 	if e != nil {
 		return nil, e
 	}
@@ -331,7 +375,7 @@ func (c *Controller) poll(tx *sql.Tx, p contracts.PollRequest) (any, error) {
 		var selected []contracts.UnitRef
 		for _, r := range x.p.Units {
 			var eligible int
-			e = tx.QueryRow(`SELECT COUNT(*) FROM run_units u WHERE run_id=? AND unit_id=? AND ready=1 AND NOT EXISTS(SELECT 1 FROM owners o WHERE o.run_id=u.run_id AND o.unit_id=u.unit_id) AND NOT EXISTS(SELECT 1 FROM acceptances a WHERE a.run_id=u.run_id AND a.unit_id=u.unit_id) AND NOT EXISTS(SELECT 1 FROM candidates c WHERE c.run_id=u.run_id AND c.unit_id=u.unit_id)`, x.run, r.UnitID).Scan(&eligible)
+			e = tx.QueryRow(`SELECT COUNT(*) FROM run_units u WHERE run_id=? AND unit_id=? AND ready=1 AND NOT EXISTS(SELECT 1 FROM owners o WHERE o.run_id=u.run_id AND o.unit_id=u.unit_id) AND NOT EXISTS(SELECT 1 FROM acceptances a WHERE a.run_id=u.run_id AND a.unit_id=u.unit_id) AND NOT EXISTS(SELECT 1 FROM candidates c WHERE c.run_id=u.run_id AND c.unit_id=u.unit_id) AND COALESCE((SELECT attempts FROM unit_attempts n WHERE n.run_id=u.run_id AND n.unit_id=u.unit_id),0)<? AND COALESCE((SELECT reason FROM unit_attempts n WHERE n.run_id=u.run_id AND n.unit_id=u.unit_id),'')=''`, x.run, r.UnitID, c.cfg.MaxAttempts).Scan(&eligible)
 			if e != nil {
 				return nil, e
 			}
@@ -343,7 +387,7 @@ func (c *Controller) poll(tx *sql.Tx, p contracts.PollRequest) (any, error) {
 			continue
 		}
 		now := time.Now().UTC()
-		a := contracts.Assignment{SchemaVersion: 1, AssignmentID: "assignment-" + contracts.Hash([]byte(p.RequestID+":"+p.SessionID)), RunID: x.run, WorkerID: p.WorkerID, SessionID: p.SessionID, PackageDigest: x.digest, Units: selected, Runtime: c.cfg.Runtime, Profile: c.cfg.Profile, PolicyRevision: 1, StopNewUnitsAt: now.Add(5 * time.Minute), TerminateAt: now.Add(6 * time.Minute), HandoffDeadline: now.Add(7 * time.Minute)}
+		a := contracts.Assignment{SchemaVersion: 1, AssignmentID: "assignment-" + contracts.Hash([]byte(p.WorkerID+":"+p.RequestID+":"+p.SessionID)), RunID: x.run, WorkerID: p.WorkerID, SessionID: p.SessionID, PackageDigest: x.digest, Units: selected, Runtime: c.cfg.Runtime, Profile: c.cfg.Profile, PolicyRevision: 1, StopNewUnitsAt: now.Add(c.cfg.StopAfter), TerminateAt: now.Add(c.cfg.TerminateAfter), HandoffDeadline: now.Add(c.cfg.HandoffAfter)}
 		if e = a.Validate(); e != nil {
 			return nil, e
 		}
@@ -351,6 +395,9 @@ func (c *Controller) poll(tx *sql.Tx, p contracts.PollRequest) (any, error) {
 			return nil, e
 		}
 		for _, r := range selected {
+			if _, e = tx.Exec("INSERT INTO unit_attempts VALUES(?,?,1,'',0) ON CONFLICT(run_id,unit_id) DO UPDATE SET attempts=attempts+1", a.RunID, r.UnitID); e != nil {
+				return nil, e
+			}
 			if _, e = tx.Exec("INSERT INTO members VALUES(?,?,?)", a.AssignmentID, a.RunID, r.UnitID); e != nil {
 				return nil, e
 			}
@@ -446,12 +493,54 @@ func (c *Controller) final(tx *sql.Tx, r contracts.FinalReport) (any, error) {
 	if e != nil {
 		return nil, e
 	}
+	var resolved int
+	if e = tx.QueryRow("SELECT count(*) FROM terminal_evidence WHERE assignment_id=?", a.AssignmentID).Scan(&resolved); e != nil {
+		return nil, e
+	}
+	if resolved > 0 {
+		return nil, errors.New("terminal-resolved assignment cannot apply a new final inventory")
+	}
+	if len(r.OperationalReason) > 4096 {
+		return nil, errors.New("operational reason too large")
+	}
+	var uncertain int
+	if e = tx.QueryRow("SELECT count(*) FROM execution_reports e WHERE e.assignment_id=? AND e.state='uncertain' AND NOT EXISTS(SELECT 1 FROM terminal_evidence t WHERE t.assignment_id=e.assignment_id)", a.AssignmentID).Scan(&uncertain); e != nil {
+		return nil, e
+	}
+	if uncertain > 0 {
+		return nil, errors.New("uncertain execution requires exact terminal evidence")
+	}
+	var minStarted int
+	e = tx.QueryRow("SELECT last_grant FROM assignment_controls WHERE assignment_id=?", a.AssignmentID).Scan(&minStarted)
+	if e != nil && !errors.Is(e, sql.ErrNoRows) {
+		return nil, e
+	}
+	var reportBytes []byte
+	e = tx.QueryRow("SELECT manifest FROM execution_reports WHERE assignment_id=?", a.AssignmentID).Scan(&reportBytes)
+	if e == nil {
+		var report contracts.ReconcileRequest
+		if e = json.Unmarshal(reportBytes, &report); e != nil {
+			return nil, e
+		}
+		if len(report.Started) > minStarted {
+			minStarted = len(report.Started)
+		}
+	} else if !errors.Is(e, sql.ErrNoRows) {
+		return nil, e
+	}
+	for _, id := range r.NeverStarted {
+		for i, u := range a.Units {
+			if id == u.UnitID && i < minStarted {
+				return nil, errors.New("never-started inventory contradicts recorded grants")
+			}
+		}
+	}
 	seen := map[string]bool{}
 	members := map[string]bool{}
 	for _, u := range a.Units {
 		members[u.UnitID] = true
 	}
-	for _, id := range append(append([]string{}, r.Completed...), r.NeverStarted...) {
+	for _, id := range append(append(append([]string{}, r.Completed...), r.NeverStarted...), r.Interrupted...) {
 		if !members[id] || seen[id] {
 			return nil, errors.New("invalid final inventory")
 		}
@@ -480,6 +569,18 @@ func (c *Controller) final(tx *sql.Tx, r contracts.FinalReport) (any, error) {
 	if _, e = tx.Exec("UPDATE assignments SET final=? WHERE id=?", b, a.AssignmentID); e != nil {
 		return nil, e
 	}
+	if previous == nil {
+		for _, id := range r.NeverStarted {
+			if _, e = tx.Exec("UPDATE unit_attempts SET attempts=max(attempts-1,0) WHERE run_id=? AND unit_id=?", a.RunID, id); e != nil {
+				return nil, e
+			}
+		}
+		for _, id := range r.Interrupted {
+			if _, e = tx.Exec("UPDATE unit_attempts SET reason='interrupted: explicit retry policy required' WHERE run_id=? AND unit_id=?", a.RunID, id); e != nil {
+				return nil, e
+			}
+		}
+	}
 	if _, e = tx.Exec("DELETE FROM owners WHERE assignment_id=?", a.AssignmentID); e != nil {
 		return nil, e
 	}
@@ -502,7 +603,15 @@ func (c *Controller) Status(ctx context.Context, run string) (contracts.Status, 
 			return s, e
 		}
 	}
-	if e := c.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM assignments WHERE run_id=? AND final IS NULL", run).Scan(&n); e != nil {
+	for _, q := range []struct {
+		sql string
+		dst *int
+	}{{"SELECT count(*) FROM execution_reports e JOIN assignments a ON a.id=e.assignment_id WHERE a.run_id=? AND e.state='uncertain' AND a.final IS NULL AND NOT EXISTS(SELECT 1 FROM terminal_evidence t WHERE t.assignment_id=a.id)", &s.UncertainAssignments}, {"SELECT count(*) FROM unit_attempts WHERE run_id=? AND reason='attempt budget exhausted'", &s.Exhausted}, {"SELECT count(*) FROM unit_attempts WHERE run_id=? AND data_loss=1", &s.DataLossUnits}, {"SELECT count(*) FROM unit_attempts WHERE run_id=? AND reason='waiting retained validation'", &s.WaitingRetainedValidation}} {
+		if e := c.db.QueryRowContext(ctx, q.sql, run).Scan(q.dst); e != nil {
+			return s, e
+		}
+	}
+	if e := c.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM assignments WHERE run_id=? AND final IS NULL AND NOT EXISTS(SELECT 1 FROM terminal_evidence t WHERE t.assignment_id=assignments.id)", run).Scan(&n); e != nil {
 		return s, e
 	}
 	s.Quiescent = n == 0

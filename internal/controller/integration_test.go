@@ -35,6 +35,7 @@ type fixture struct {
 	cfg                     Config
 	server                  *httptest.Server
 	operator, worker        *agent.Client
+	other                   *agent.Client
 	ca, cert, key, app, cli string
 	cancel                  context.CancelFunc
 	done                    chan error
@@ -97,7 +98,7 @@ func setup(t *testing.T) *fixture {
 	if e != nil {
 		t.Fatal(e)
 	}
-	for _, cmd := range []string{"hermes-synthetic", "hermes-synthetic-validator", "hermes", "hermes-controller"} {
+	for _, cmd := range []string{"hermes-synthetic", "hermes-synthetic-validator", "hermes", "hermes-controller", "hermes-agent"} {
 		p := exec.Command("go", "build", "-o", filepath.Join(dir, cmd), "./cmd/"+cmd)
 		p.Dir = root
 		p.Env = append(os.Environ(), "CGO_ENABLED=0")
@@ -109,9 +110,10 @@ func setup(t *testing.T) *fixture {
 	pair, _, _, _, _ := certificate(t, dir, "server", ca, signer)
 	_, _, _, oc, ok := certificate(t, dir, "operator", ca, signer)
 	_, _, _, wc, wk := certificate(t, dir, "worker:local", ca, signer)
+	_, _, _, otherCert, otherKey := certificate(t, dir, "worker:other", ca, signer)
 	roots := x509.NewCertPool()
 	roots.AddCert(ca)
-	cfg := Config{Root: filepath.Join(dir, "controller"), WorkerID: "local", Profile: "synthetic-local", Runtime: "synthetic-v1", Validator: "synthetic-v1", ValidatorArgv: []string{filepath.Join(dir, "hermes-synthetic-validator")}, MaxArtifactBytes: 1 << 20}
+	cfg := Config{Root: filepath.Join(dir, "controller"), Workers: []string{"local", "other"}, Profile: "synthetic-local", Runtime: "synthetic-v1", Validator: "synthetic-v1", ValidatorArgv: []string{filepath.Join(dir, "hermes-synthetic-validator")}, MaxArtifactBytes: 1 << 20}
 	c, e := Open(cfg)
 	if e != nil {
 		t.Fatal(e)
@@ -130,7 +132,11 @@ func setup(t *testing.T) *fixture {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- c.RunValidators(ctx) }()
-	f := &fixture{c: c, cfg: cfg, server: server, operator: op, worker: worker, ca: caPath, cert: oc, key: ok, app: filepath.Join(dir, "hermes-synthetic"), cli: filepath.Join(dir, "hermes"), cancel: cancel, done: done}
+	other, e := agent.NewClient(server.URL, caPath, otherCert, otherKey)
+	if e != nil {
+		t.Fatal(e)
+	}
+	f := &fixture{c: c, cfg: cfg, server: server, operator: op, worker: worker, other: other, ca: caPath, cert: oc, key: ok, app: filepath.Join(dir, "hermes-synthetic"), cli: filepath.Join(dir, "hermes"), cancel: cancel, done: done}
 	var once, validationOnce sync.Once
 	f.stopValidation = func() { validationOnce.Do(func() { cancel(); <-done }) }
 	f.stop = func() { once.Do(func() { f.stopValidation(); server.Close(); c.Close() }) }
@@ -178,7 +184,7 @@ func (l *loseReplies) RoundTrip(r *http.Request) (*http.Response, error) {
 		return nil, e
 	}
 	l.mu.Lock()
-	drop := !l.lost[r.URL.Path] && (r.URL.Path == "/v1/poll" || r.URL.Path == "/v1/receipt" || r.URL.Path == "/v1/candidate")
+	drop := !l.lost[r.URL.Path] && (r.URL.Path == "/v1/poll" || r.URL.Path == "/v1/receipt" || r.URL.Path == "/v1/candidate" || r.URL.Path == "/v1/control/ack")
 	if drop {
 		l.lost[r.URL.Path] = true
 	}

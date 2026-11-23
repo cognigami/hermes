@@ -86,7 +86,7 @@ func (c *Client) send(req *http.Request, dst any) error {
 		switch req.URL.Path {
 		case "/v1/runs":
 			valid = a.RunID != ""
-		case "/v1/receipt":
+		case "/v1/receipt", "/v1/control/ack", "/v1/lost-spool":
 			valid = a.Received
 		case "/v1/candidate":
 			valid = len(a.RawPublished) == 64

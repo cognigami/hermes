@@ -202,7 +202,10 @@ Late results from a known prior attempt remain candidates for the same immutable
 
 Recovery loads active assignments, unresolved delivery/validation/control records and indexed ready work, not all historical artifact bytes. Agents reconcile exact assignment IDs and manifest digests. Establish compatibility from recorded contracts/manifests once, then reuse compatible completed preparation, fits/checks and product subresults without replaying or revalidating the accepted prefix. Preparation is application-defined reusable work/artifacts, not an infrastructure-owned numerical cache. Accept retained candidates before deciding whether unaccepted units need another computation. Restarting incomplete numerical work preserves the application's prescribed initialization; resource recovery does not authorize changing scientific settings, numerical acceptance or valid unavailability outcomes.
 
-For a connected assignment with a surviving spool, retry requires its durable final inventory and confirmation that the old process tree is quiescent or never started. If termination is established and the spool is confirmed irrecoverably lost, do not wait for an impossible final worker inventory. Reconcile controller-retained candidates first, record missing results as operational data loss, and retry only units without a retained usable result; pending validation is resolved before recomputation. This is not an override of uncertain ownership. “Not found” in a restarted agent journal is insufficient termination proof if its journal was lost. Operator-confirmed machine shutdown can resolve uncertainty. No heartbeat timeout automatically fences a process that cannot hear it.
+For a connected assignment with a surviving spool, retry requires its durable final inventory and confirmation that the old process tree is quiescent or never started. If termination is established and the spool is confirmed irrecoverably lost, do not wait for an impossible final worker inventory. Reconcile controller-retained candidates first, record missing results as operational data loss, and retry only units without a retained usable result; pending validation is resolved before recomputation. This is not an override of uncertain ownership. “Not found” in a restarted agent journal is insufficient termination proof if its journal was lost. Operator-confirmed machine shutdown can resolve uncertainty. No heartbeat timeout automatically fences a process that cannot hear it. Final-inventory accounting
+belongs to its exact assignment and is applied at most once; delayed inventory from an assignment
+superseded by terminal/lost-spool resolution must not refund or change a later attempt's accounting
+or blocked reason. Late candidate publication/acceptance remains a separate supported path.
 
 ## 11. Drain, deadlines and interruption
 
@@ -222,7 +225,9 @@ A process group alone is not proof of generic descendant containment: applicatio
 sessions/groups or launch external services without being hostile. A group-based backend can qualify
 only an execution contract that establishes all owned descendants remain in the controlled group,
 plus a reliable whole-group exit check. Otherwise containment remains unsupported/unknown and
-admission must fail closed. Sending a signal proves delivery, not quiescence. A persisted numeric
+admission must fail closed. Sending a signal proves delivery, not quiescence. If the OS refuses enforcement, promptly persist
+and report enforcement uncertainty, retain ownership and withhold a terminal final; neither ignore
+the error nor wait indefinitely for exit after a failed kill. A persisted numeric
 PID/PGID, command name, approximate start timestamp, leader disappearance or `ECHILD` alone is
 not restart ownership proof; never signal a potentially reused identity or license replacement from
 such evidence. Where restart cannot establish safe ownership/quiescence, preserve the start records
@@ -322,6 +327,15 @@ Map Linux → `linux`, Darwin → `darwin`, Windows → `windows`; map `x86_64`/
 #### Service lifecycle and packaging
 
 Persistent-host agents use the host's service manager. Installation/bootstrap is explicitly operator-invoked; the host supervises the agent, and the controller manages assignments and reconciliation. Loss of contact is not permission for the controller to install or restart a remote service. Configure automatic service restart for ordinary process failures; recovery still reconciles owned application processes before restarting unfinished computation. An intentional service stop stays stopped, and restarting a service never clears persisted run/worker drain or pause controls or resumes an explicitly stopped application workflow. **Optional nice-to-have:** prevent macOS idle sleep while the coordinator has an active run or an agent is executing issued work, and release that request when no longer needed. Automatic sleep prevention is not a first-release requirement and does not promise recovery from deliberate sleep, shutdown or host loss.
+
+The macOS packaging target is the privileged `system` launchd domain, running each service as an
+explicitly configured existing account via `UserName`; a GUI-login agent alone does not meet startup
+independent of interactive login. Controller and agent have distinct service identities. Persistent
+intentional stop must disable the exact service and remove its registration (`disable` then `bootout`),
+not merely signal it or use `launchctl stop`, which may permit immediate restart. Starting it again
+requires explicit enable/registration. This selects packaging semantics; scripts and target-host evidence
+are still required before qualification. Launchd's default cleanup of the job's process group is not
+proof that descendants in other groups have been contained.
 
 Each `just build-agent <goos> <goarch>` output is a deployment directory containing the target executable and its deployment assets. Persistent-host packages also contain that OS's install/uninstall scripts and required service templates. First-release macOS service packages use `launchd`. The Linux finite/Kaggle package instead contains finite startup assets and does not depend on a persistent Linux service backend.
 

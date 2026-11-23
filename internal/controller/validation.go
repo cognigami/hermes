@@ -86,12 +86,29 @@ func (c *Controller) validateNext(ctx context.Context) error {
 		return e
 	}
 	if state == "valid" {
-		if _, e = tx.Exec("INSERT OR IGNORE INTO acceptances VALUES(?,?,?,?,?)", run, unit, digest, c.cfg.Validator, encoded(verdict)); e != nil {
-			return e
+		inserted, err := tx.Exec("INSERT OR IGNORE INTO acceptances VALUES(?,?,?,?,?)", run, unit, digest, c.cfg.Validator, encoded(verdict))
+		if err != nil {
+			return err
 		}
+		n, err := inserted.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 1 {
+			if _, e = tx.Exec("UPDATE unit_attempts SET reason='' WHERE run_id=? AND unit_id=?", run, unit); e != nil {
+				return e
+			}
+			if e = c.drainAcceptedRetry(tx, run, unit, v.AssignmentID); e != nil {
+				return e
+			}
+		}
+
 		if _, e = tx.Exec(`UPDATE run_units SET ready=1 WHERE run_id=? AND ready=0 AND NOT EXISTS(SELECT 1 FROM dependencies d WHERE d.run_id=run_units.run_id AND d.unit_id=run_units.unit_id AND NOT EXISTS(SELECT 1 FROM acceptances a WHERE a.run_id=d.run_id AND a.unit_id=d.prerequisite))`, run); e != nil {
 			return e
 		}
+	}
+	if e = c.reconcileTerminal(tx); e != nil {
+		return e
 	}
 	return c.commit(tx, "acceptance")
 }

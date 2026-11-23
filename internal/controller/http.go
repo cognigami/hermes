@@ -1,10 +1,12 @@
 package controller
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"hermes/internal/contracts"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,7 +20,8 @@ func (c *Controller) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	principal := r.TLS.PeerCertificates[0].Subject.CommonName
 	operator := principal == "operator"
-	worker := principal == "worker:"+c.cfg.WorkerID
+	workerID := strings.TrimPrefix(principal, "worker:")
+	worker := strings.HasPrefix(principal, "worker:") && c.allowedWorker(workerID)
 	if !operator && !worker {
 		http.Error(w, "unknown principal", 403)
 		return
@@ -33,7 +36,7 @@ func (c *Controller) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		if worker {
 			var owner string
-			if e := c.db.QueryRow("SELECT worker FROM assignments WHERE id=?", r.URL.Query().Get("assignment")).Scan(&owner); e != nil || owner != c.cfg.WorkerID {
+			if e := c.db.QueryRow("SELECT worker FROM assignments WHERE id=?", r.URL.Query().Get("assignment")).Scan(&owner); e != nil || owner != workerID {
 				http.Error(w, "assignment required", 403)
 				return
 			}
@@ -118,11 +121,42 @@ func (c *Controller) serve(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(s)
 		return
 	}
+	if r.Method == "GET" && r.URL.Path == "/v1/control/status" && operator {
+		s, e := c.ControlStatus(r.Context(), r.URL.Query().Get("kind"), r.URL.Query().Get("target"))
+		if e != nil {
+			fail(e)
+			return
+		}
+		json.NewEncoder(w).Encode(s)
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(w, "not found", 404)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, contracts.MaxMetadataBytes)
+	if worker {
+		b, e := io.ReadAll(r.Body)
+		if e != nil {
+			fail(e)
+			return
+		}
+		var identity struct {
+			WorkerID string `json:"worker_id"`
+		}
+		if e = json.Unmarshal(b, &identity); e != nil {
+			fail(e)
+			return
+		}
+		if identity.WorkerID != workerID {
+			http.Error(w, "worker certificate/body mismatch", 403)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(b))
+	}
+	if c.controlRoute(w, r, principal, operator, worker) {
+		return
+	}
 	var result []byte
 	var e error
 	switch r.URL.Path {
@@ -142,7 +176,7 @@ func (c *Controller) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		var p contracts.PollRequest
 		if e = contracts.Decode(r.Body, &p); e == nil {
-			if p.WorkerID != c.cfg.WorkerID {
+			if p.WorkerID != workerID {
 				fail(errors.New("worker mismatch"))
 				return
 			}

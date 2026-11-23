@@ -21,7 +21,7 @@ func TestMetadataCrashHelper(t *testing.T) {
 	if os.Getenv("HERMES_TEST_AUTHORITY") != "1" {
 		return
 	}
-	cfg := Config{Root: os.Getenv("HERMES_TEST_ROOT"), WorkerID: "local", Profile: "synthetic-local", Runtime: "synthetic-v1", Validator: "synthetic-v1", ValidatorArgv: []string{os.Getenv("HERMES_TEST_VALIDATOR")}, MaxArtifactBytes: 1 << 20}
+	cfg := Config{Root: os.Getenv("HERMES_TEST_ROOT"), Workers: []string{"local"}, Profile: "synthetic-local", Runtime: "synthetic-v1", Validator: "synthetic-v1", ValidatorArgv: []string{os.Getenv("HERMES_TEST_VALIDATOR")}, MaxArtifactBytes: 1 << 20}
 	c, e := Open(cfg)
 	if e != nil {
 		t.Fatal(e)

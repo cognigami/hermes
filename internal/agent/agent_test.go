@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"hermes/internal/contracts"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,13 +41,26 @@ func TestWorkBinding(t *testing.T) {
 		})
 	}
 }
+
+type testTransport func(*http.Request) (*http.Response, error)
+
+func (f testTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+func uncertainControllerClient() *Client {
+	return &Client{URL: "https://synthetic.invalid", HTTP: &http.Client{Transport: testTransport(func(r *http.Request) (*http.Response, error) {
+		body := `{"schema_version":1,"received":true}`
+		if r.URL.Path == "/v1/reconcile" {
+			body = `{"schema_version":1,"state":"uncertain"}`
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}}
+}
 func TestRestartPreparationIsUncertain(t *testing.T) {
 	root := t.TempDir()
 	j := journal{Work: testWork(), ProcessStarted: true}
 	if e := durable(filepath.Join(root, "journal.json"), j); e != nil {
 		t.Fatal(e)
 	}
-	e := Run(context.Background(), Config{Root: root, WorkerID: "worker", SessionID: "session", Runtime: "synthetic-v1", Profile: "synthetic-local", RuntimeArgv: []string{filepath.Join(root, "must-not-execute")}, Client: &Client{}, MaxArtifactBytes: 1 << 20})
+	e := Run(context.Background(), Config{Root: root, WorkerID: "worker", SessionID: "session", Runtime: "synthetic-v1", Profile: "synthetic-local", RuntimeArgv: []string{filepath.Join(root, "must-not-execute")}, Client: uncertainControllerClient(), MaxArtifactBytes: 1 << 20})
 	if e == nil || !strings.Contains(e.Error(), "ownership uncertain") {
 		t.Fatal(e)
 	}

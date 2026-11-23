@@ -47,7 +47,10 @@ Application exit, unexpected messages and missing bytes are operational failures
 
 ## Synthetic executables
 
-`cmd/hermes-synthetic` accepts `--manifest <fixture.json> --output <private-dir>`. `testdata/synthetic/manifest.json` is a one-unit sample; its distant deadlines are fixture values, not deployment policy. The fixture manifest contains an assignment, full unit definitions, `failure` and `delay_millis` (0–60000). Failure values:
+`cmd/hermes-synthetic` accepts `--manifest <fixture.json> --output <private-dir>`, optional
+`--delay-millis` (per-unit delay override) and `--prepare-delay-millis` (before ready), each at most
+60000 ms. These application-owned timing controls exercise outages and interruption, not production
+resource policy. `testdata/synthetic/manifest.json` is a one-unit sample; its distant deadlines are fixture values, not deployment policy. The fixture manifest contains an assignment, full unit definitions, `failure` and `delay_millis` (0–60000). Failure values:
 
 | Value | Behavior |
 | --- | --- |
@@ -76,12 +79,14 @@ this scope. The plan owns subsequent slice gates and implementation status.
 ### Configuration and transport
 
 - Controller flags: `--root`, `--listen` (default `127.0.0.1:8443`), `--ca`, `--cert`, `--key`,
-  `--worker`, `--validator` (absolute executable path).
+  `--workers` (comma-separated authorized worker identities), `--validator` (absolute executable path).
 - Agent flags: `--root`, `--worker`, `--session`, `--runtime` (absolute executable path),
-  `--url`, `--ca`, `--cert`, `--key`. Worker and execution-session identities persist in its spool;
+  `--url`, `--ca`, `--cert`, `--key`, plus repeatable `--runtime-arg` for explicit application argv
+  (never shell text). Worker and execution-session identities persist in its spool;
   do not mint replacement identities to bypass unfinished ownership.
 - CLI: `hermes [--url ... --ca ... --cert ... --key ...] artifact-put <file>`,
-  `submit <manifest>`, or `status <run>`. Put flags before the subcommand. A submitted manifest is
+  `submit <manifest>`, `status <run>`, `control <json>`, `control-status <run:id|worker:id>`, or
+  `lost-spool <json>`. Put flags before the subcommand. A submitted manifest is
   `contracts.Submission`, not the application fixture manifest. Retain its request ID and repeat
   exactly the same submission to recover a lost response.
 - Transport requires TLS 1.3 and CA-verified mutual certificates. Provisioned certificate common
@@ -90,7 +95,7 @@ this scope. The plan owns subsequent slice gates and implementation status.
   test directories; production credential provisioning/rotation and service permissions are not yet
   qualified. Keep this slice on the local synthetic endpoint.
 - The entrypoints configure runtime/validator revision `synthetic-v1`, profile `synthetic-local`,
-  one worker, 1 MiB per artifact and finite assignment start/termination/handoff bounds of 5/6/7
+  an explicit worker allowlist, 1 MiB per artifact and finite assignment start/termination/handoff bounds of 5/6/7
   minutes from issue. These are synthetic development settings, not approved workload budgets.
 
 ### Ownership, bytes and acceptance
@@ -141,9 +146,78 @@ commits; recovery checks rollback/persistence and atomic dependent readiness. A 
 controller-binary kill test establishes post-acknowledgment persistence. None is power-loss or
 service/host deployment certification.
 
-Preparation-started or unit-started unfinished work fails closed as uncertain on agent restart;
-there is no process adoption or automatic replay. Drain, full process-tree lifecycle/reconciliation,
-aggregate admission/resource recovery and indexed ready-package scheduling remain later slices.
-The current scheduler scans package metadata, and status exposes only acceptance/quiescence,
-validation-failure and conflict counts. There is no automatic retry of domain-rejected calculations,
-finite exchange, managed Kaggle or workflow successor implementation yet.
+Aggregate run status also reports uncertain/exhausted/data-loss/waiting-retained-validation counts.
+The current scheduler scans package metadata. Aggregate host admission/resource recovery and indexed
+ready-package scheduling remain S4; finite exchange, managed Kaggle and workflow successors remain
+later slices. There is no automatic retry of domain-rejected calculations. S3's leaf-only controls and
+recovery additions are described below; correctness and engineering review gates passed within the
+explicit leaf-only scope.
+
+## Leaf execution control and recovery (S3)
+
+Controller and agent are separate production executables. Killing the controller does not kill
+issued agent computation; local publication continues through network outages. The supported
+execution boundary is still **one synthetic leaf process with no descendants**. A live owned child
+handle plus observed exit (`Wait` success or an exit-status error) can establish that leaf's quiescence.
+Unknown wait errors do not. No numeric PID/PGID discovery, signaling or process adoption is used on
+restart; generic process-tree containment and service deployment remain unqualified.
+
+### Durable drain barrier
+
+`control` consumes `contracts.ControlRequest`: stable request ID, target kind (`run` or `worker`),
+target ID, expected current revision, action (`drain` or `resume`) and finite drain termination time.
+It commits issuance pause plus affected assignment controls before returning `intent_persisted`.
+That response is not a completed drain. Poll `control-status` for persisted revision, pending
+barriers, live assignments, uncertainty and drain state. Unknown run/worker targets fail rather than
+appearing eligible; a known target with no controls is eligible at revision zero. Resume permits future issuance only; it does
+not reverse a drain already applied to issued work. Run and worker barriers survive restarts.
+
+Each agent grant and drain application serialize on the same journal mutex. Drain persists its
+revision and last granted unit before acknowledgment; no later grant can cross that boundary.
+Already granted work may finish. A leaf monitor requests cooperative termination early enough for
+the configured grace and forced termination at the earlier of the original or operator cutoff.
+All signals/cancellation use one checked owned-handle path. Signal failure closes the gate, unblocks
+local protocol reads and reports the bounded operational cause as enforcement uncertainty, never a
+successful final. Exactly one asynchronous wait observes exit; failure/termination cleanup waits at
+most 100 ms for that observation, then remains uncertain if actual exit has not been proved. A later
+file or signal result alone does not clear uncertainty. The synthetic grace defaults to 100 ms;
+original finite deadlines are never extended for delayed control or restart. Clock rollback against
+the retained receipt closes starts conservatively.
+
+Execution quiescence, raw-result delivery and final inventory remain distinct. Finals partition the
+assignment into completed, interrupted and never-started units. A lost control acknowledgment retries
+the same request/revision; stale reconciliation cannot regress recorded grant progress or clear
+uncertainty. Unreachable agents and expired deadlines alone do not release ownership.
+
+### Restart and irrecoverable spool loss
+
+A retained marker-free receipt must reconcile before first start. A preparation/unit-start marker
+without persisted quiescence remains uncertain after agent restart: retain the journal, publish any
+retained candidates and refuse new starts. Do not change the worker/session identity or delete its
+journal to bypass this state. Retained quiescent work republishes pending results/final inventory
+without replaying accepted computation.
+
+`lost-spool` consumes `contracts.LostSpoolResolution` through authenticated operator access. It is
+only for **both** positively established exact-execution termination (or confirmed machine shutdown)
+**and** irrecoverable spool loss, bound to the original assignment/worker/session with an evidence kind
+and explanation. It is not a duplicate-risk override for uncertain running work. Reconcile all
+controller-retained candidates/validation first; then record operational data loss and retry only
+missing units within the configured attempt budget (synthetic default two attempts). Retained
+acceptances are reused; pending or unresolved operational validation prevents recomputation.
+Never demand an impossible final inventory from a confirmed lost disk. Newly applied final reports
+for such terminal-resolved assignments are rejected: delayed old inventory must not refund attempts,
+overwrite reasons or alter a newer owner's accounting. Previously committed request outcomes remain
+idempotent, and late candidates still use ordinary publication/validation.
+
+### Current evidence boundary
+
+Local synthetic tests exercise separate production controller/agent processes during controller
+SIGKILL and restart, surviving issued computation without accepted-prefix replay, two logical-worker
+drain/run barriers, persisted pause, grant/drain races, sync failure, finite leaf cutoffs including a
+SIGTERM-ignoring leaf, uncertain agent-process restart with retained candidate publication, offline
+stop-new-unit expiry, late old-candidate acceptance while retry ownership remains live, and
+terminal-proven missing-only recovery. Two roots on one test host model separate logical workers;
+they do not qualify multiple agents on a physical host or aggregate admission. Full S3 checks and
+independent correctness/engineering re-reviews passed within this scope; subsequent slice gates
+remain tracked in the plan. These tests certify neither arbitrary descendants
+nor launchd/service-account behavior.
