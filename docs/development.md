@@ -415,7 +415,24 @@ copy and runs continuation asynchronously; insufficient capacity waits without c
 attempts. Shutdown cancels and joins validator/continuation loops before closing controller authority.
 
 Real mTLS/CLI tests cover dispatch, replay, role guards and disabled registration. A built-controller
-process test covers optional startup, charged runtime-copy creation, joined shutdown and restart
-without approval. These are not a fresh multi-stage numerical application demonstration, service
-manager qualification or cloud execution; those remaining gates are tracked in the implementation
-plan.
+process test separately covers optional startup, charged runtime-copy creation, joined shutdown and
+restart without approval.
+
+`examples/staged-workflow/numerical_workflow_test.go` exercises a fresh application-owned numerical
+workflow through public joined library services, real native-Darwin registration/resources, loopback
+mTLS and separately compiled application children. The fixture in `testdata/numerical-workflow`
+computes cumulative sums of squares: `[1,2,3] → 14`, prior canonical `14 + [4,5] → 55`, then prior
+canonical `55 + [6] → 91`. The actual pinned domain validator checks input/output identities and
+numerical evidence before canonical acceptance; an approved protected decision adapter submits two
+successor graphs and records the application-prescribed stop. No acceptance records are injected.
+Tests check canonical prior-artifact references, three units/attempts/acceptances, explicit
+stop/reopen/resume, completed restart, preserved creation/elapsed/submission history and an optional
+two-unit allowance with the same retained, unsubmitted third-stage intent across restart. This is
+bounded no-extra-attempt evidence, not proof about
+arbitrary crash/adoption or CPU instruction counts.
+
+The numerical exercise is small supplied synthetic application qualification, not production-binary
+CLI/launchd, cold-host/Linux/Kaggle, hard-quota, general descendant-containment or Perry compatibility
+qualification. Production startup/join tests remain separate evidence; their combination is not a
+service-manager or cloud execution claim. Remaining platform/rollover gates are tracked in the
+implementation plan.
