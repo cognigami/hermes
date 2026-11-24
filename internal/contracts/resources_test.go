@@ -1,11 +1,34 @@
 package contracts_test
 
 import (
+	"encoding/json"
 	"hermes/internal/contracts"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestRegistrationTotalSpoolDistinguishesLegacyAndEmpty(t *testing.T) {
+	zero := int64(0)
+	for _, total := range []*int64{nil, &zero} {
+		original := contracts.WorkerRegistration{TotalSpoolBytes: total}
+		data, err := json.Marshal(original)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded contracts.WorkerRegistration
+		if err = json.Unmarshal(data, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if (decoded.TotalSpoolBytes == nil) != (total == nil) {
+			t.Fatal("legacy nil became observed empty total", string(data))
+		}
+		if total != nil && (!strings.Contains(string(data), `"total_spool_bytes":0`) || *decoded.TotalSpoolBytes != 0) {
+			t.Fatal("explicit zero observation omitted", string(data))
+		}
+	}
+}
 
 func TestResourceArithmeticAndScientificIdentity(t *testing.T) {
 	a := contracts.ResourceVector{CPUMilli: 1000, MemoryBytes: 64 << 20, SpoolBytes: 8 << 20}

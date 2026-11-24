@@ -111,7 +111,7 @@ this scope. The plan owns subsequent slice gates and implementation status.
   test directories; production credential provisioning/rotation and service permissions are not yet
   qualified. Keep this slice on the local synthetic endpoint.
 - The entrypoints configure runtime/validator revision `synthetic-v1`, profile `synthetic-local`,
-  an explicit worker allowlist, 1 MiB per artifact and finite assignment start/termination/handoff bounds of 5/6/7
+  an explicit worker allowlist, a default 1-MiB artifact limit (controller-configurable) and finite assignment start/termination/handoff bounds of 5/6/7
   minutes from issue. These are synthetic development settings, not approved workload budgets.
 
 ### Ownership, bytes and acceptance
@@ -165,7 +165,7 @@ service/host deployment certification.
 Aggregate run status also reports uncertain/exhausted/data-loss/waiting-retained-validation counts.
 Readiness uses indexed package metadata. Aggregate admission enforces approved logical reservations
 with fresh native-capacity checks; this is not a hard CPU/RAM quota or generic descendant containment.
-Finite exchange and managed Kaggle remain unavailable. Workflow continuation is an optional service
+Registered native-Darwin finite exchange is implemented and reviewed; see [finite exchange](#registered-host-finite-exchange-s6) for its local approval, ownership and evidence limits. Managed Kaggle remains unavailable. Workflow continuation is an optional service
 configured by an explicit local adapter approval. Ordinary domain rejection is not
 retry authorization; resource escalation separately requires qualified same-attempt evidence,
 quiescence and retained-result reconciliation. S3's leaf-only controls and
@@ -309,6 +309,87 @@ host/admission locks across hashing. Cache verification becomes true only after 
 artifact publication and index commit; incoming bytes are still verified on publication. Failed
 ambiguous intents remain charged, and retained files remain charged after raw acknowledgment. This
 is bounded admission accounting, not a hard filesystem quota or a garbage collector.
+
+## Registered-host finite exchange (S6)
+
+**Scope:** this implementation has passed scoped correctness and assembled engineering review plus local synthetic checks. The usage below is not a record of a dispatched workload, a native service trial, a fresh numerical multi-stage demonstration or a cloud-ready deployment. Finite execution currently requires registered native Darwin observations and matching `darwin/amd64` `v1` or `darwin/arm64` `v8.0` runtime identity. Linux/unknown effective capacity fails closed; a compiled Linux binary or a notebook label is not qualification. Managed Kaggle lifecycle/rollover is not supplied by this slice.
+
+Local synthetic real-mTLS SDK/controller tests exercise registered native-Darwin owned-leaf RAW/FINAL exchange. That combined exercise deliberately runs no domain validator: it is not evidence of scientific acceptance, a numerical workflow, target-service behavior, provider cold start or hard resource quotas.
+
+### Upfront runtime approval and artifact ingress
+
+Controller `--finite-runtime-config <local-file>` consumes bounded strict JSON:
+
+```json
+{"schema_version":1,"approved_runtimes":[]}
+```
+
+The empty array explicitly disables future exports. Each nonempty entry is the existing `contracts.FiniteRuntimeRef`: `runtime`, `goos`, `goarch`, `isa_baseline`, `executable` (`Artifact`) and optional `support` (`[]Artifact`). There are at most 64 entries. `ConfigureFiniteRuntimes` is the sole descriptor validator: exact runtime contract, permitted target/ISA, unique compatible binding, and executable/support digest **and size already present in the controller's verified artifact catalog**. The file cannot supply argv, upload source files or approve remote execution through an export request. This reuses existing artifacts, not a second binary registry. Approval is local deployment configuration, not per-job forwarding or an approval endpoint.
+
+A new controller instance with no file does **not** restore its predecessor's export permission. Existing sealed bundles, import and status remain usable. The configuration is applied once after opening controller metadata and before serving HTTP; there is no live reload. To bootstrap missing runtime bytes, start without finite approval, publish them through the existing operator `artifact-put`, then restart with the explicit catalog references. No automatic upload or approval occurs.
+
+Controller `--max-artifact-bytes` defaults to **1 MiB**. A real compiled Go runtime can exceed this: choose an explicit positive limit, at most `MaxInt64-1`, and independently sufficient approved transfer/host storage reservations before publication. The option does not increase those budgets or change the default. The finite agent has the matching per-artifact option/default; its local cache/staging allocations must also fit. Increasing the byte limit alone is not capacity approval.
+
+The agent's `--approved-runtimes` file is a bounded strict JSON **array** of local `agent.FiniteRuntimeBinding` records: an exact `FiniteRuntimeRef` under `reference`, independently approved absolute executable `argv`, and optional `support_paths` mapping declared support digests to absolute locally provisioned paths. Each declared support artifact needs its matching local path; a self-contained Go runtime declares none. This is distinct from the controller's versioned `approved_runtimes` envelope. The bundle supplies references, never arbitrary argv or paths. Deployment executable/support bytes, target/ISA, sizes and digests must match; interpretation/calculation meaning remains application-owned.
+
+### Registered native CLI sequence
+
+The following is **source usage**, not a record of commands run or a self-provisioning demo. Supply existing synthetic graph/request files, verified runtime/support files, approved host/resource policy and mTLS credentials. Use independently provisioned worker/session/host identities matching that policy; never derive replacement identities from a received bundle. In this example the supplied export request's bundle ID is `synthetic-bundle`. Paths are illustrative absolute private paths. The explicit 32-MiB artifact limit is an example, not a default or a reservation: choose it from actual verified artifact sizes and separately sufficient approved capacity.
+
+1. Register the actual native host under its root lock. Registration refreshes retained-byte totals and observed capacity and performs the real authenticated registration mutation; it never polls or executes work. New sealing requires the latest actual registration/total pointer and no unresolved prior owned work. A stale snapshot requires real re-registration, not a fake inventory, synthetic receipt or a guessed TTL.
+2. Supply upfront controller-local runtime approval before export. If the catalog is not yet populated, use the existing operator `artifact-put` against a controller started without finite approval, then restart with `--finite-runtime-config` after all referenced bytes are durable. Publication alone does not approve runtime descriptors; refresh real host registration if its snapshot has become stale. Skip this bootstrap when the catalog/configuration already exists.
+3. Export the request into its dedicated transfer directory, execute only the sealed bundle with fixed `RunFinite`, import available output incrementally, then apply the genuine controller acknowledgment to that same host root. The commands below show the registered exchange; catalog/configuration bootstrap is a separate deployment preparation step.
+
+```sh
+dist/local/hermes-agent register --root /absolute/synthetic-host-state \
+  --worker synthetic-local --session finite-session --host-id synthetic-host \
+  --url https://localhost:8443 --ca /absolute/tls/ca.pem \
+  --cert /absolute/tls/worker-cert.pem --key /absolute/tls/worker-key.pem \
+  --max-artifact-bytes 33554432
+
+dist/local/hermes --url https://localhost:8443 --ca /absolute/tls/ca.pem \
+  --cert /absolute/tls/operator-cert.pem --key /absolute/tls/operator-key.pem \
+  finite-export /absolute/synthetic/export-request.json /absolute/synthetic-transfer/input
+
+dist/local/hermes-agent finite-run --root /absolute/synthetic-host-state \
+  --bundle /absolute/synthetic-transfer/input \
+  --worker synthetic-local --session finite-session --host-id synthetic-host \
+  --approved-runtimes /absolute/synthetic/agent-runtimes.json \
+  --max-artifact-bytes 33554432
+
+dist/local/hermes --url https://localhost:8443 --ca /absolute/tls/ca.pem \
+  --cert /absolute/tls/operator-cert.pem --key /absolute/tls/operator-key.pem \
+  finite-import /absolute/synthetic-host-state/exchange/synthetic-bundle
+
+dist/local/hermes-agent finite-ack --root /absolute/synthetic-host-state \
+  --ack /absolute/synthetic-host-state/exchange/synthetic-bundle/ack.json
+```
+
+All global operator mTLS flags precede its subcommand. Agent finite subcommands accept named flags only: `register` uses TLS solely for real registration; `finite-run` has no connected client/TLS/network dependency; `finite-ack` consumes only root and genuine acknowledgment metadata. `--host-id` defaults to the supplied worker identity; `--max-concurrent` defaults to 64 and cannot expand approved capacity. No synthetic-backend override is needed or implied. A nonzero execution/import result is not a license to repeat computation: preserve journals, partial output and the importer's durable acknowledgment, then reconcile what actually committed.
+
+### Sealed exchange and incremental acknowledgment
+
+`contracts.FiniteExportRequest` contains schema version 1, stable `request_id`, safe `bundle_id`, registered `worker_id`/`session_id`/`host_id`, bounded `member_limit` (1–64), and absolute `stop_new_units_at`, `terminate_at`, `handoff_deadline`. It contains no runtime/argv choice. Before any destination writes, the client checks the returned bundle/worker/session/host identity, member limit and original deadline bounds against the request. Export reserves original assignments before returning a `FiniteBundleEnvelope`; repeating the same request recovers the same authority rather than issuing a second execution. A bundle is single-use under its provisioned execution identity, not permission to copy and run it twice.
+
+The input directory contains `bundle.json` (the sealed envelope) and `blobs/<sha256>`. Operator `finite-export ... DESTINATION` is local **input/transport staging**, possibly on a different CLI host; it is not SDK-managed output. The controller does not charge that directory to its host budget, and the CLI supplies no local filesystem quota/admission guarantee. The destination must be a dedicated, exclusively owned operator transport cache: no concurrent publishers or manual/foreign replacement while the CLI uses it. The existing artifact-store open may clean only its reserved unacknowledged ingress scratch under that exclusive ownership; an arbitrary mixed-use directory is not safe. The bounded metadata inventory and regular artifact files are verified; files are made complete atomically and the manifest is written last. A reused destination must contain that same sealed bundle and verified bytes, not an unrelated export or silently overwritten foreign bytes. A copy/ENOSPC failure must retry the **same sealed bundle and request IDs**; it never releases its owners or authorizes a duplicate export. Preserve original deadlines through retry and transfer; delayed receipt never grants fresh time.
+
+The agent's private output is `<hostRoot>/exchange/<bundle_id>/`, distinct from its provisioned input directory. It contains `bundle.json`, incremental `candidates/<candidateDigest>.json` (`CandidateReport`), referenced `blobs/<sha256>` and, when available, `finals/<assignmentDigest>.json` (`FiniteFinalInventory`). There is no all-or-nothing global completion marker. Import may retain already published candidates while another member, transfer or final inventory remains incomplete.
+
+The operator importer uploads result bytes through the finite-specific bound ingress `PUT /v1/finite/artifacts/<sha256>?bundle=<bundleDigest>&member=<assignmentDigest>&assignment=<originalAssignmentID>`. The server validates durable sealed membership before delegating ordinary artifact publication, retaining the original assignment output credit and approved transport minimum. This is not a generic operator artifact-PUT assignment-credit override; ordinary `artifact-put` behavior is unchanged.
+
+The operator importer durably updates output `ack.json` after each successful publication or recovered controller acknowledgment. This is `FiniteImportAck`: schema version, bundle ID/digest and member acknowledgments containing `assignment_digest`, `raw_published`, `reconciliation_revision`, `final_digest`, `resource_stop_acknowledged`. Partial progress is preserved if a later file fails. A raw candidate acknowledgment proves controller publication, **not scientific acceptance or final execution reconciliation**. Final acknowledgment is also not scientific acceptance. Canonical validation/acceptance remains the ordinary controller path.
+
+Apply only a **genuine controller import acknowledgment** to the original host root. Never construct an acknowledgment from local output, an exit code, an empty candidate list, elapsed time or hoped-for acceptance. Only explicitly acknowledged facts advance local delivery/final state; retained bytes remain charged, not garbage-collected by acknowledgment.
+
+### Ownership and current limits
+
+Registration is real, authenticated inventory registration under the provisioned host authority, not a fabricated budget/receipt or a cold-start exception. A fresh total inventory mutation must reflect retained bytes before export decisions; disconnected execution cannot expand operator-approved capacity. Pending connected polls or unresolved unrelated host work must be reconciled rather than hidden by a new root, identity or fake acknowledgment.
+
+`RunFinite` executes one sealed graph with original finite bounds and no connected client: there is no live remote refill or drain channel. A retained started execution without positively observed leaf exit remains uncertain and blocks new starts; it may still publish retained candidates. Restart does not replay a completed/accepted prefix. Deadline expiry, missing PID, process-parent death or controller silence is not proof of termination and never releases ownership by itself. Later retry/rollover requires ordinary terminal evidence and retained-result reconciliation, not another run of the copied bundle.
+
+The current SDK accepts a read-only input `--bundle` directory outside the host root, and independently approved absolute executable/support paths may also be external. Those external, operator-provisioned read-only source/deployment files are **outside the SDK spool quota**, under deployment/source-storage responsibility. Exact approved bindings, targets, sizes and digests are still verified, and the operator must protect runtime/support immutability throughout issued work. This is not a whole-machine or external-source quota guarantee. A source already inside the host root remains subject to normal owned-file accounting; copying an external source into SDK-private storage creates a separately charged managed copy. No SDK-owned external output location is supported. Fresh filesystem free-space observations restrict SDK writes, but are not an approved entitlement or accounting reservation for external directories.
+
+Every SDK-created/retained cache, staging, work, blob and exchange copy/intent inside the host root is charged before writing its bytes, including transient-copy reservations; digest equality is not permission to hide a second physical copy. Output originals and the copies under `exchange/<bundle_id>/` remain charged after acknowledgment. The operator-local input staging directory described above has no CLI quota promise and is not a second SDK output store. Deployment must provide room for source/input bytes as well as the managed copies; an explicit artifact-size option never approves that space by itself. Ordinary recovery/status uses indexed metadata, not a scan or rehash of historical accepted payloads.
 
 ## Workflow CLI transport (S8)
 

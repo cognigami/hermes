@@ -8,7 +8,7 @@ import (
 	"runtime"
 )
 
-func (h *host) initializeResources(ctx context.Context) error {
+func (h *host) initializeLocalSpool() error {
 	owners := map[string]string{}
 	for id := range h.active {
 		owners[contracts.Hash([]byte(id))] = id
@@ -24,11 +24,18 @@ func (h *host) initializeResources(ctx context.Context) error {
 			return e
 		}
 	}
+	return nil
+}
+
+func (h *host) initializeResources(ctx context.Context) error {
+	if e := h.initializeLocalSpool(); e != nil {
+		return e
+	}
 	var active []string
 	for id := range h.active {
 		active = append(active, id)
 	}
-	snapshot, e := index.Snapshot(active)
+	snapshot, e := h.spool.Snapshot(active)
 	if e != nil {
 		return e
 	}
@@ -36,7 +43,7 @@ func (h *host) initializeResources(ctx context.Context) error {
 	if e != nil {
 		return e
 	}
-	registration := contracts.WorkerRegistration{SchemaVersion: 1, RequestID: ID(), WorkerID: h.cfg.WorkerID, SessionID: h.cfg.SessionID, HostID: h.cfg.HostID, Observed: observed, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, RetainedSpoolBytes: snapshot.ClosedBytes, SpoolRevision: snapshot.Revision, InventoryRevision: h.inventory.Revision}
+	registration := contracts.WorkerRegistration{SchemaVersion: 1, RequestID: ID(), WorkerID: h.cfg.WorkerID, SessionID: h.cfg.SessionID, HostID: h.cfg.HostID, Observed: observed, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, RetainedSpoolBytes: snapshot.ClosedBytes, TotalSpoolBytes: &snapshot.TotalBytes, SpoolRevision: snapshot.Revision, InventoryRevision: h.inventory.Revision}
 	var budget contracts.HostBudget
 	for {
 		e = h.cfg.Client.Do(ctx, "POST", "/v1/register", registration, &budget)
@@ -47,13 +54,18 @@ func (h *host) initializeResources(ctx context.Context) error {
 			return e
 		}
 	}
+	return h.installBudget(budget)
+}
+
+func (h *host) installBudget(budget contracts.HostBudget) error {
 	if budget.Approval.WorkerID != h.cfg.WorkerID || budget.Approval.HostID != h.cfg.HostID {
 		return errors.New("registered budget identity mismatch")
 	}
 	if h.cfg.SyntheticBackend && !budget.AllowSyntheticBackend {
 		return errors.New("synthetic backend is not approved")
 	}
-	h.admission, e = newAdmission(h.cfg.Root, index, budget)
+	var e error
+	h.admission, e = newAdmission(h.cfg.Root, h.spool, budget)
 	if e != nil {
 		return e
 	}

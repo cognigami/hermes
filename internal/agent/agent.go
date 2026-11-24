@@ -31,6 +31,7 @@ type Config struct {
 	MaxConcurrent                               int
 }
 type journal struct {
+	Finite                   *finiteJournal              `json:"finite,omitempty"`
 	Work                     contracts.Work              `json:"work"`
 	ProcessStarted           bool                        `json:"process_started"`
 	Started                  []string                    `json:"started"`
@@ -61,6 +62,8 @@ type runner struct {
 	lastWall          time.Time
 	terminalPersisted bool
 	controlDurable    int64
+	finiteRuntime     *FiniteRuntimeBinding
+	finiteOutput      *finiteOutput
 	// Tests may replace signals on this owned live child; never a numeric PID lookup.
 	testSignal func(*os.Process, os.Signal) error
 	// Synthetic helper selectors supplied explicitly by tests, never inherited.
@@ -142,6 +145,27 @@ func (r *runner) receipt(suffix string) contracts.Receipt {
 	a := r.j.Work.Assignment
 	return contracts.Receipt{SchemaVersion: 1, RequestID: a.AssignmentID + ":" + suffix, AssignmentID: a.AssignmentID, WorkerID: a.WorkerID, SessionID: a.SessionID}
 }
+func (r *runner) finalSnapshotLocked() contracts.FinalReport {
+	final := contracts.FinalReport{Receipt: r.receipt("final"), OperationalReason: r.j.OperationalReason, LaunchFailed: r.j.LaunchFailed}
+	completed := map[string]bool{}
+	started := map[string]bool{}
+	for _, c := range r.j.Candidates {
+		completed[c.UnitID] = true
+		final.Completed = append(final.Completed, c.UnitID)
+	}
+	for _, id := range r.j.Started {
+		started[id] = true
+	}
+	for _, u := range r.j.Work.Assignment.Units {
+		if !started[u.UnitID] {
+			final.NeverStarted = append(final.NeverStarted, u.UnitID)
+		} else if !completed[u.UnitID] {
+			final.Interrupted = append(final.Interrupted, u.UnitID)
+		}
+	}
+	return final
+}
+
 func (r *runner) assignment(ctx context.Context) (resultErr error) {
 	// Delivery runs independently of grant progress. Local publication is the only
 	// acknowledgment needed before the next issued unit; outage retains bytes.
@@ -237,31 +261,7 @@ func (r *runner) assignment(ctx context.Context) (resultErr error) {
 		return e
 	}
 	r.mu.Lock()
-	final := contracts.FinalReport{Receipt: r.receipt("final"), OperationalReason: r.j.OperationalReason, LaunchFailed: r.j.LaunchFailed}
-	for _, c := range r.j.Candidates {
-		final.Completed = append(final.Completed, c.UnitID)
-	}
-	for _, u := range r.j.Work.Assignment.Units {
-		found := false
-		for _, s := range r.j.Started {
-			if s == u.UnitID {
-				found = true
-			}
-		}
-		if !found {
-			final.NeverStarted = append(final.NeverStarted, u.UnitID)
-		} else {
-			completed := false
-			for _, c := range r.j.Candidates {
-				if c.UnitID == u.UnitID {
-					completed = true
-				}
-			}
-			if !completed {
-				final.Interrupted = append(final.Interrupted, u.UnitID)
-			}
-		}
-	}
+	final := r.finalSnapshotLocked()
 	r.mu.Unlock()
 	for {
 		e := r.cfg.Client.Do(ctx, "POST", "/v1/final", final, nil)

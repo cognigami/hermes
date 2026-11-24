@@ -71,22 +71,25 @@ func (c *Controller) saveSpoolAccount(tx *sql.Tx, h contracts.HostApproval, p co
 	return e
 }
 func (c *Controller) reportedSpool(tx *sql.Tx, h contracts.HostApproval, p contracts.PollRequest) (int64, error) {
+	return c.reportedSpoolForSession(tx, h, p.SessionID, p.RetainedSpoolBytes, p.Retained)
+}
+func (c *Controller) reportedSpoolForSession(tx *sql.Tx, h contracts.HostApproval, session string, retained int64, covered []contracts.RetainedAssignment) (int64, error) {
 	var other, current int64
-	if e := tx.QueryRow("SELECT coalesce(sum(bytes),0) FROM worker_spool_accounts WHERE host_id=? AND session_id!=?", h.HostID, p.SessionID).Scan(&other); e != nil {
+	if e := tx.QueryRow("SELECT coalesce(sum(bytes),0) FROM worker_spool_accounts WHERE host_id=? AND session_id!=?", h.HostID, session).Scan(&other); e != nil {
 		return 0, e
 	}
-	e := tx.QueryRow("SELECT bytes FROM worker_spool_accounts WHERE host_id=? AND session_id=?", h.HostID, p.SessionID).Scan(&current)
+	e := tx.QueryRow("SELECT bytes FROM worker_spool_accounts WHERE host_id=? AND session_id=?", h.HostID, session).Scan(&current)
 	if e != nil && !errors.Is(e, sql.ErrNoRows) {
 		return 0, e
 	}
-	if p.RetainedSpoolBytes > current {
-		current = p.RetainedSpoolBytes
+	if retained > current {
+		current = retained
 	}
 	// A pre-final poll snapshot may still cover a now-terminal owner rather
 	// than report its bytes as closed. Keep its output/work envelope charged
 	// until the worker supplies a post-retirement inventory; never treat exit
 	// or a raw ACK as deletion. This is bounded by the retained active list.
-	for _, entry := range p.Retained {
+	for _, entry := range covered {
 		var held int64
 		e := tx.QueryRow(`SELECT max(r.spool,coalesce((SELECT max(f.min_spool) FROM resource_failures f WHERE f.assignment_id=a.id),0)) FROM allocation_reservations r JOIN assignments a ON a.id=r.assignment_id WHERE a.id=? AND (a.final IS NOT NULL OR EXISTS(SELECT 1 FROM terminal_evidence t WHERE t.assignment_id=a.id))`, entry.AssignmentID).Scan(&held)
 		if errors.Is(e, sql.ErrNoRows) {
@@ -260,11 +263,8 @@ func (c *Controller) unitFitsProfile(tx *sql.Tx, run string, ref contracts.UnitR
 	if e := json.Unmarshal(b, &unit); e != nil {
 		return false, e
 	}
-	for _, capability := range unit.RequiredCapabilities {
-		supported := capability == "os:"+r.GOOS || capability == "arch:"+r.GOARCH || capability == "leaf_exit" || (capability == "hard_tree_memory" && r.Observed.HardTreeMemory == "supported" && profile.Allocation.RequiresHardTreeMemory)
-		if !supported {
-			return false, nil
-		}
+	if !contracts.SupportsCapabilities(unit.RequiredCapabilities, r.GOOS, r.GOARCH, r.Observed.HardTreeMemory, profile.Allocation) {
+		return false, nil
 	}
 	var requirement contracts.UnitResourceRequirement
 	e := tx.QueryRow("SELECT manifest FROM resource_requirements WHERE run_id=? AND unit_id=?", run, ref.UnitID).Scan(&b)
@@ -286,12 +286,15 @@ func (c *Controller) unitFitsProfile(tx *sql.Tx, run string, ref contracts.UnitR
 	return !(floorMemory > 0 && v.MemoryBytes <= floorMemory) && !(floorSpool > 0 && v.SpoolBytes <= floorSpool) && (contracts.ResourceVector{CPUMilli: minCPU, MemoryBytes: minMemory, SpoolBytes: minSpool}).Fits(v), nil
 }
 func (c *Controller) profileFor(tx *sql.Tx, poll contracts.PollRequest, run string, refs []contracts.UnitRef) (contracts.ResourceProfile, int64, error) {
+	return c.profileForInventory(tx, poll.WorkerID, poll.SessionID, poll.RetainedSpoolBytes, poll.Retained, run, refs)
+}
+func (c *Controller) profileForInventory(tx *sql.Tx, worker, session string, retained int64, covered []contracts.RetainedAssignment, run string, refs []contracts.UnitRef) (contracts.ResourceProfile, int64, error) {
 	var none contracts.ResourceProfile
 	p, e := c.policy(tx)
 	if e != nil {
 		return none, 0, e
 	}
-	h, ok := approvalForWorker(p, poll.WorkerID)
+	h, ok := approvalForWorker(p, worker)
 	if !ok {
 		return none, 0, nil
 	}
@@ -302,7 +305,7 @@ func (c *Controller) profileFor(tx *sql.Tx, poll contracts.PollRequest, run stri
 	if e != nil {
 		return none, 0, e
 	}
-	spool, e := c.reportedSpool(tx, h, poll)
+	spool, e := c.reportedSpoolForSession(tx, h, session, retained, covered)
 	if e != nil {
 		return none, 0, e
 	}

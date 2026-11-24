@@ -47,6 +47,9 @@ func (c *Controller) serveHTTP(w http.ResponseWriter, r *http.Request, workflows
 	}
 	fail := func(e error) { http.Error(w, e.Error(), 400) }
 	w.Header().Set("Content-Type", "application/json")
+	if c.finiteRoute(w, r, operator) {
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/v1/artifacts/") {
 		digest := strings.TrimPrefix(r.URL.Path, "/v1/artifacts/")
 		if len(digest) != 64 {

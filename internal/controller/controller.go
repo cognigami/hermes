@@ -149,6 +149,9 @@ func Open(cfg Config) (*Controller, error) {
 	if _, e = c.db.Exec(resourceSchema); e != nil {
 		return nil, e
 	}
+	if _, e = c.db.Exec(finiteSchema); e != nil {
+		return nil, e
+	}
 	if _, e = c.db.Exec(ingressSchema); e != nil {
 		return nil, e
 	}

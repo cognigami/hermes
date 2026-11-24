@@ -95,6 +95,9 @@ func (j *journal) UnmarshalJSON(b []byte) error {
 			return errors.New("persisted grant inventory is not assignment prefix")
 		}
 	}
+	if e := validateFiniteJournal(value); e != nil {
+		return e
+	}
 	*j = value
 	return nil
 }

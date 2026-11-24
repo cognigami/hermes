@@ -123,6 +123,7 @@ type WorkerRegistration struct {
 	GOOS               string          `json:"goos"`
 	GOARCH             string          `json:"goarch"`
 	RetainedSpoolBytes int64           `json:"retained_spool_bytes,omitempty"`
+	TotalSpoolBytes    *int64          `json:"total_spool_bytes,omitempty"`
 	SpoolRevision      int64           `json:"spool_revision,omitempty"`
 	InventoryRevision  int64           `json:"inventory_revision,omitempty"`
 }

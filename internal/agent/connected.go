@@ -50,6 +50,11 @@ func Run(ctx context.Context, cfg Config) error {
 		return e
 	}
 	defer h.Close()
+	for _, r := range h.active {
+		if r.j.Finite != nil {
+			return errors.New("retained finite work requires finite execution/import acknowledgment, not connected polling")
+		}
+	}
 	runningCtx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	defer func() { cancel(); wg.Wait() }()

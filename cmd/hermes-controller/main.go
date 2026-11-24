@@ -39,9 +39,14 @@ func run() error {
 	validator := flag.String("validator", "", "absolute synthetic validator executable")
 	policyFile := flag.String("resource-policy", "", "approved versioned resource policy JSON file")
 	workflowFile := flag.String("workflow-adapter-config", "", "optional controller-local workflow adapter approval JSON")
+	finiteFile := flag.String("finite-runtime-config", "", "optional controller-local finite runtime approval JSON")
+	maxArtifactBytes := flag.Int64("max-artifact-bytes", 1<<20, "maximum bytes per artifact (positive int64 below MaxInt64; resource policy still applies)")
 	flag.Parse()
 	if *version {
 		return json.NewEncoder(os.Stdout).Encode(platform.Current())
+	}
+	if e := validateMaxArtifactBytes(*maxArtifactBytes); e != nil {
+		return e
 	}
 	var approval *controller.WorkflowAdapterConfig
 	if *workflowFile != "" {
@@ -74,13 +79,16 @@ func run() error {
 	if !pool.AppendCertsFromPEM(b) {
 		return fmt.Errorf("invalid CA")
 	}
-	c, e := controller.Open(controller.Config{Root: *root, ResourcePolicy: &policy, Workers: strings.Split(*worker, ","), Runtime: "synthetic-v1", Validator: "synthetic-v1", Profile: "synthetic-local", ValidatorArgv: []string{*validator}, MaxArtifactBytes: 1 << 20})
+	c, e := controller.Open(controller.Config{Root: *root, ResourcePolicy: &policy, Workers: strings.Split(*worker, ","), Runtime: "synthetic-v1", Validator: "synthetic-v1", Profile: "synthetic-local", ValidatorArgv: []string{*validator}, MaxArtifactBytes: *maxArtifactBytes})
 	if e != nil {
 		return e
 	}
 	defer c.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if e = configureFiniteRuntimes(ctx, c, *finiteFile); e != nil {
+		return e
+	}
 	if e = c.InstallWorkflows(ctx); e != nil {
 		return e
 	}

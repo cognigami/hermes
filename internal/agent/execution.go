@@ -15,6 +15,11 @@ import (
 
 func (r *runner) execute(ctx context.Context) (resultErr error) {
 	r.terminalPersisted = false
+	if r.j.Finite != nil {
+		if e := r.checkFiniteEnvironment(ctx); e != nil {
+			return e
+		}
+	}
 	a := r.j.Work.Assignment
 	bounded, cancel := context.WithDeadline(ctx, a.TerminateAt)
 	defer cancel()
@@ -46,6 +51,18 @@ func (r *runner) execute(ctx context.Context) (resultErr error) {
 	}
 	if e := r.checkOwnedSpool(); e != nil {
 		return e
+	}
+	if r.j.Finite != nil {
+		if e := r.checkFiniteEnvironment(ctx); e != nil {
+			return e
+		}
+		ok, e := r.admission.try(r.j.Work.Assignment.AssignmentID)
+		if e != nil {
+			return e
+		}
+		if !ok {
+			return errors.New("finite admission changed before launch")
+		}
 	}
 	r.mu.Lock()
 	if e := r.syntheticStopLocked("prepare"); e != nil {
@@ -301,6 +318,12 @@ func (r *runner) persistCandidate(candidate contracts.Candidate) error {
 		r.j.Candidates = r.j.Candidates[:len(r.j.Candidates)-1]
 		r.j.GateClosed = true
 		return e
+	}
+	if r.finiteOutput != nil {
+		if e := r.finiteOutput.candidate(r, candidate); e != nil {
+			r.j.GateClosed = true
+			return e
+		}
 	}
 	return nil
 }

@@ -166,6 +166,9 @@ func (c *Controller) registerHost(tx *sql.Tx, r contracts.WorkerRegistration) (a
 	if r.Observed.Source == "synthetic_test" && r.Observed.HardTreeMemory != "unknown" {
 		return nil, errors.New("synthetic inventory cannot qualify hard enforcement")
 	}
+	if r.TotalSpoolBytes != nil && (*r.TotalSpoolBytes < 0 || *r.TotalSpoolBytes < r.RetainedSpoolBytes) {
+		return nil, errors.New("invalid total retained spool accounting")
+	}
 	if _, e = tx.Exec("INSERT INTO host_observations VALUES(?,?,?) ON CONFLICT(host_id) DO UPDATE SET session_id=excluded.session_id,manifest=excluded.manifest", h.HostID, r.SessionID, encoded(r)); e != nil {
 		return nil, e
 	}
