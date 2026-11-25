@@ -1,0 +1,49 @@
+{
+  "workspace_id": "w1B",
+  "captured_at": "2026-11-25",
+  "state": "All workers paused; restoration opens conversations only, not permission to resume work.",
+  "coordinator_session_id": "01a2096d-a6cd-74f7-8a78-2ded4f7a3adf",
+  "housekeeping_fork_session_id": "01a21003-f1ab-74f7-8a78-2e004e3a7387",
+  "workers": [
+    {
+      "name": "hermes-foundation",
+      "role": "Agent/contracts, resource admission and finite SDK implementation",
+      "session_id": "01a20979-66ff-70e8-bcec-7dd82a1c93e2",
+      "session_file": "/Users/ricardo/.pi/agent/sessions/--Users-ricardo-Documents-hermes--/2026-11-23T17-34-40-896Z_01a20979-66ff-70e8-bcec-7dd82a1c93e2.jsonl",
+      "tab_id": "w1B:tD",
+      "pane_id": "w1B:pD"
+    },
+    {
+      "name": "hermes-correctness",
+      "role": "SDK correctness and assembled engineering review; read-only",
+      "session_id": "01a2097b-8460-760c-a47c-45cb76cc4205",
+      "session_file": "/Users/ricardo/.pi/agent/sessions/--Users-ricardo-Documents-hermes--/2026-11-23T17-36-59-488Z_01a2097b-8460-760c-a47c-45cb76cc4205.jsonl",
+      "tab_id": "w1B:tE",
+      "pane_id": "w1B:pE"
+    },
+    {
+      "name": "hermes-integration-review",
+      "role": "Controller exchange/operator CLI and packaging implementation",
+      "session_id": "01a20997-8d19-7377-94c6-ffab1804c4dd",
+      "session_file": "/Users/ricardo/.pi/agent/sessions/--Users-ricardo-Documents-hermes--/2026-11-23T18-07-36-730Z_01a20997-8d19-7377-94c6-ffab1804c4dd.jsonl",
+      "tab_id": "w1B:tF",
+      "pane_id": "w1B:pF"
+    },
+    {
+      "name": "hermes-readiness",
+      "role": "Workflow continuation, local configuration, numerical qualification and documentation",
+      "session_id": "01a20a60-3d06-7689-b36f-aec5653256ed",
+      "session_file": "/Users/ricardo/.pi/agent/sessions/--Users-ricardo-Documents-hermes--/2026-11-23T21-46-48-967Z_01a20a60-3d06-7689-b36f-aec5653256ed.jsonl",
+      "tab_id": "w1B:tG",
+      "pane_id": "w1B:pG"
+    },
+    {
+      "name": "hermes-service-review",
+      "role": "Controller/service/workflow correctness and numerical qualification review; read-only",
+      "session_id": "01a20a6c-5999-759e-9320-b6ab6a3f0440",
+      "session_file": "/Users/ricardo/.pi/agent/sessions/--Users-ricardo-Documents-hermes--/2026-11-23T22-00-02-713Z_01a20a6c-5999-759e-9320-b6ab6a3f0440.jsonl",
+      "tab_id": "w1B:tH",
+      "pane_id": "w1B:pH"
+    }
+  ]
+}
